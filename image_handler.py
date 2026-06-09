@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Callable
 
 from csdn_uploader import CSDNUploader
 
@@ -12,6 +12,7 @@ class ImageUploadResult:
     csdn_url: str = ""
     success: bool = False
     error: str = ""
+    method: str = ""
 
 
 class ImageHandler:
@@ -26,7 +27,8 @@ class ImageHandler:
 
     def upload_all(
         self, image_paths: List[str],
-        progress_callback=None
+        progress_callback: Callable | None = None,
+        use_fallback: bool = True
     ) -> List[ImageUploadResult]:
         if not self.uploader:
             raise RuntimeError("CSDNUploader 未设置")
@@ -38,14 +40,20 @@ class ImageHandler:
             result = ImageUploadResult(original_path=path)
             try:
                 resolved = self._resolve_path(path)
-                if resolved:
-                    url = self.uploader.upload_image(str(resolved))
+                if not resolved:
+                    result.error = f"图片文件不存在: {path}"
+                else:
+                    if use_fallback:
+                        url = self.uploader.upload_with_fallback(str(resolved))
+                        result.method = "fallback"
+                    else:
+                        url = self.uploader.upload_image(str(resolved))
+                        result.method = "csdn"
                     result.csdn_url = url
                     result.success = True
-                else:
-                    result.error = f"图片文件不存在: {path}"
             except Exception as e:
                 result.error = str(e)
+
             results.append(result)
 
             if progress_callback:

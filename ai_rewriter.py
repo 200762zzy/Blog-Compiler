@@ -28,6 +28,7 @@ class RewriteConfig:
 class AIRewriter:
     def __init__(self, config: RewriteConfig | None = None):
         self.config = config or RewriteConfig()
+        self.last_error = ""
 
     def rewrite(self, markdown_content: str) -> str:
         if not self.config.api_key:
@@ -43,6 +44,7 @@ class AIRewriter:
         return "\n\n".join(results)
 
     def _call_api(self, content: str) -> str:
+        self.last_error = ""
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
@@ -64,12 +66,19 @@ class AIRewriter:
                 headers=headers,
             )
 
-        resp.raise_for_status()
-        data = resp.json()
+        if resp.status_code != 200:
+            detail = f"HTTP {resp.status_code}"
+            try:
+                detail += f"\n响应: {resp.json()}"
+            except Exception:
+                detail += f"\n响应: {resp.text[:500]}"
+            self.last_error = detail
+            raise RuntimeError(f"API 请求失败\n{detail}")
 
+        data = resp.json()
         choices = data.get("choices", [])
         if not choices:
-            raise ValueError(f"API 返回异常: {data}")
+            raise RuntimeError(f"API 返回异常 (无 choices): {data}")
 
         return choices[0]["message"]["content"].strip()
 
@@ -104,8 +113,9 @@ class AIRewriter:
             {"label": "GPT-4o", "value": "gpt-4o", "base": "https://api.openai.com/v1"},
             {"label": "DeepSeek-V3", "value": "deepseek-chat", "base": "https://api.deepseek.com/v1"},
             {"label": "DeepSeek-R1", "value": "deepseek-reasoner", "base": "https://api.deepseek.com/v1"},
+            {"label": "DeepSeek-V4-Flash", "value": "deepseek-v4-flash", "base": "https://api.deepseek.com/v1"},
             {"label": "Moonshot-v1", "value": "moonshot-v1-8k", "base": "https://api.moonshot.cn/v1"},
             {"label": "Qwen-Max", "value": "qwen-max", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
             {"label": "GLM-4", "value": "glm-4", "base": "https://open.bigmodel.cn/api/paas/v4"},
-            {"label": "自定义", "value": "custom", "base": ""},
+            {"label": "自定义 (可编辑)", "value": "custom", "base": ""},
         ]

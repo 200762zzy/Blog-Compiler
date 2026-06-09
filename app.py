@@ -414,12 +414,18 @@ class MainWindow(QMainWindow):
         ai_layout.addRow("API Key:", self.settings_api_key)
 
         self.settings_model = QComboBox()
+        self.settings_model.setEditable(True)
+        self.settings_model.lineEdit().setPlaceholderText("选择或输入模型名")
         models = AIRewriter.supported_models()
         saved_model = self.settings.get("ai_model", "gpt-4o-mini")
+        found = False
         for m in models:
             self.settings_model.addItem(m["label"], m)
             if m["value"] == saved_model:
                 self.settings_model.setCurrentIndex(self.settings_model.count() - 1)
+                found = True
+        if not found:
+            self.settings_model.setEditText(saved_model)
         ai_layout.addRow("模型:", self.settings_model)
 
         self.settings_api_base = QLineEdit()
@@ -445,13 +451,15 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self, dialog):
         api_key = self.settings_api_key.text().strip()
+        model_text = self.settings_model.currentText().strip()
         model_data = self.settings_model.currentData()
-        if model_data:
+
+        if model_data and model_data.get("value") != "custom":
             model = model_data["value"]
             api_base = self.settings_api_base.text().strip() or model_data["base"]
         else:
-            model = "gpt-4o-mini"
-            api_base = "https://api.openai.com/v1"
+            model = model_text if model_text and model_text != "自定义 (可编辑)" else "gpt-4o-mini"
+            api_base = self.settings_api_base.text().strip() or "https://api.deepseek.com/v1"
 
         if api_key:
             self.settings.set_encrypted("ai_api_key", api_key)
@@ -712,6 +720,6 @@ class MainWindow(QMainWindow):
             self.btn_export.setEnabled(True)
 
         if fail_count > 0:
-            fail_paths = [r.original_path for r in results if not r.success]
-            for p in fail_paths:
-                self.log(f"  ❌ 上传失败: {p}")
+            for r in results:
+                if not r.success:
+                    self.log(f"  ❌ {Path(r.original_path).name}: {r.error[:200]}")
