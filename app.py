@@ -270,7 +270,7 @@ class MainWindow(QMainWindow):
             self.image_count_label.setText(f"图片: {len(result.images)}")
             self.content_tabs.setTabText(0, f"原文 ({Path(filepath).name})")
             has_images = len(result.images) > 0
-            self.btn_upload.setEnabled(has_images and self.csdn_uploader.cookies)
+            self.btn_upload.setEnabled(bool(has_images and self.csdn_uploader.cookies))
             self.btn_ai.setEnabled(self.ai_rewriter is not None)
             self.btn_pipeline.setEnabled(self.ai_rewriter is not None)
             self.content_tabs.setTabEnabled(2, False)
