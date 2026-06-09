@@ -1,4 +1,6 @@
-PySide6>=6.6.0
+PySide6_Essentials>=6.6.0
+PySide6_Addons>=6.6.0
+shiboken6>=6.6.0
 mistune>=3.0.0
 httpx>=0.27.0
 cryptography>=41.0.0

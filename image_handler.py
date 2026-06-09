@@ -1,5 +1,9 @@
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
+
+from csdn_uploader import CSDNUploader
 
 
 @dataclass
@@ -11,30 +15,66 @@ class ImageUploadResult:
 
 
 class ImageHandler:
-    def __init__(self):
-        self.csdn_logged_in = False
+    def __init__(self, uploader: CSDNUploader | None = None):
+        self.uploader = uploader
 
-    def upload_all(self, images: List[str]) -> List[ImageUploadResult]:
+    def set_uploader(self, uploader: CSDNUploader):
+        self.uploader = uploader
+
+    def extract_images(self, markdown: str) -> List[str]:
+        return re.findall(r'!\[.*?\]\((.+?)\)', markdown)
+
+    def upload_all(
+        self, image_paths: List[str],
+        progress_callback=None
+    ) -> List[ImageUploadResult]:
+        if not self.uploader:
+            raise RuntimeError("CSDNUploader 未设置")
+
         results = []
-        for path in images:
+        total = len(image_paths)
+
+        for i, path in enumerate(image_paths):
             result = ImageUploadResult(original_path=path)
             try:
-                url = self._upload_single(path)
-                if url:
+                resolved = self._resolve_path(path)
+                if resolved:
+                    url = self.uploader.upload_image(str(resolved))
                     result.csdn_url = url
                     result.success = True
                 else:
-                    result.error = "上传返回空 URL"
+                    result.error = f"图片文件不存在: {path}"
             except Exception as e:
                 result.error = str(e)
             results.append(result)
+
+            if progress_callback:
+                progress_callback(i + 1, total, path, result.success)
+
         return results
 
-    def _upload_single(self, path: str) -> str:
-        raise NotImplementedError("Phase 2 实现")
+    def _resolve_path(self, path: str) -> Path | None:
+        p = Path(path)
+        if p.exists():
+            return p
 
-    def replace_image_links(self, markdown: str, results: List[ImageUploadResult]) -> str:
+        candidates = [
+            Path.cwd() / path,
+            Path.cwd() / Path(path).name,
+            Path.home() / path,
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
+    def replace_in_markdown(self, markdown: str, results: List[ImageUploadResult]) -> str:
         for r in results:
             if r.success:
-                markdown = markdown.replace(r.original_path, r.csdn_url)
+                escaped = re.escape(r.original_path)
+                markdown = re.sub(
+                    rf'(!\[.*?\]\()({escaped})(\))',
+                    rf'\1{r.csdn_url}\3',
+                    markdown
+                )
         return markdown

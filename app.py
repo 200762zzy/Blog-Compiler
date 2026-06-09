@@ -1,17 +1,39 @@
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QIcon, QFont
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QTabWidget,
     QTextEdit, QToolBar, QStatusBar, QLabel, QPushButton,
-    QFileDialog, QMessageBox, QProgressBar, QCheckBox
+    QFileDialog, QMessageBox, QProgressBar
 )
 
 from parser import parse_markdown
 from settings import Settings
+from login_window import CsdnLoginWindow
+from csdn_uploader import CSDNUploader
+from image_handler import ImageHandler
+
+
+class UploadWorker(QThread):
+    progress = Signal(int, int, str, bool)
+    finished = Signal(object)
+
+    def __init__(self, handler, images):
+        super().__init__()
+        self.handler = handler
+        self.images = images
+
+    def run(self):
+        results = self.handler.upload_all(
+            self.images, progress_callback=self._on_progress
+        )
+        self.finished.emit(results)
+
+    def _on_progress(self, current, total, path, success):
+        self.progress.emit(current, total, path, success)
 
 
 class MainWindow(QMainWindow):
@@ -19,11 +41,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = Settings()
         self.file_paths = []
+        self.csdn_uploader = CSDNUploader()
+        self.image_handler = ImageHandler(self.csdn_uploader)
+        self.current_content = ""
+        self.current_result = None
         self._setup_ui()
-        self._apply_settings()
+        self._restore_login()
 
     def _setup_ui(self):
-        self.setWindowTitle("Blog Compiler v0.1")
+        self.setWindowTitle("Blog Compiler v0.2")
         self.resize(1300, 850)
 
         central = QWidget()
@@ -48,7 +74,7 @@ class MainWindow(QMainWindow):
 
         preview_tab = QWidget()
         preview_layout = QVBoxLayout(preview_tab)
-        self.preview_placeholder = QLabel("选择文件后点击「预览」查看 HTML 渲染效果")
+        self.preview_placeholder = QLabel("选择文件后查看解析信息")
         self.preview_placeholder.setAlignment(Qt.AlignCenter)
         preview_layout.addWidget(self.preview_placeholder)
 
@@ -66,14 +92,20 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(op_label)
 
         self.btn_login = QPushButton("登录 CSDN")
-        self.btn_ai = QPushButton("AI 改写")
-        self.btn_export = QPushButton("导出")
-        self.btn_login.setEnabled(False)
-        self.btn_ai.setEnabled(False)
-        self.btn_export.setEnabled(False)
-
+        self.btn_login.clicked.connect(self._login_csdn)
         right_layout.addWidget(self.btn_login)
+
+        self.btn_upload = QPushButton("上传图片到 CSDN")
+        self.btn_upload.clicked.connect(self._upload_images)
+        self.btn_upload.setEnabled(False)
+        right_layout.addWidget(self.btn_upload)
+
+        self.btn_ai = QPushButton("AI 改写")
+        self.btn_ai.setEnabled(False)
         right_layout.addWidget(self.btn_ai)
+
+        self.btn_export = QPushButton("导出")
+        self.btn_export.setEnabled(False)
         right_layout.addWidget(self.btn_export)
 
         right_layout.addSpacing(10)
@@ -102,9 +134,11 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.status_label = QLabel("就绪")
+        self.login_status = QLabel("CSDN: 未登录")
         self.file_count_label = QLabel("文件: 0")
         self.image_count_label = QLabel("图片: 0")
         self.status_bar.addWidget(self.status_label, 1)
+        self.status_bar.addPermanentWidget(self.login_status)
         self.status_bar.addPermanentWidget(self.file_count_label)
         self.status_bar.addPermanentWidget(self.image_count_label)
         self.setStatusBar(self.status_bar)
@@ -153,6 +187,8 @@ class MainWindow(QMainWindow):
         self.file_paths.clear()
         self.file_list.clear()
         self.original_view.clear()
+        self.current_content = ""
+        self.current_result = None
         self._update_status()
         self.log("已清空文件列表")
 
@@ -164,8 +200,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "读取失败", f"无法读取文件:\n{e}")
             return
 
+        self.current_content = content
         self.original_view.setText(content)
         result = parse_markdown(content)
+        self.current_result = result
+
         if not result.is_valid:
             self.log(f"⚠️ 解析警告: {result.error}")
         else:
@@ -178,6 +217,8 @@ class MainWindow(QMainWindow):
             )
             self.image_count_label.setText(f"图片: {len(result.images)}")
             self.content_tabs.setTabText(0, f"原文 ({Path(filepath).name})")
+            has_images = len(result.images) > 0
+            self.btn_upload.setEnabled(has_images and self.csdn_uploader.cookies)
 
     def _toggle_dark(self, checked):
         if checked:
@@ -282,3 +323,103 @@ class MainWindow(QMainWindow):
             path = url.toLocalFile()
             if path.lower().endswith(('.md', '.markdown')):
                 self._add_file(path)
+
+    def _restore_login(self):
+        saved = self.settings.get_encrypted("csdn_cookies")
+        if saved:
+            try:
+                import json
+                cookies = json.loads(saved)
+                self.csdn_uploader.login(cookies)
+                self.image_handler.set_uploader(self.csdn_uploader)
+                self._update_login_status(True)
+                self.log("🔑 已恢复 CSDN 登录状态")
+                self._verify_login()
+            except Exception:
+                pass
+
+    def _verify_login(self):
+        ok = self.csdn_uploader.verify_login()
+        if not ok:
+            self.log("⚠️ CSDN Cookie 已过期，请重新登录")
+            self.csdn_uploader.cookies = {}
+            self.settings.set_encrypted("csdn_cookies", "{}")
+            self._update_login_status(False)
+        else:
+            self.log("✅ CSDN 登录状态有效")
+
+    def _login_csdn(self):
+        dialog = CsdnLoginWindow(self)
+        dialog.login_successful.connect(self._on_login_success)
+        dialog.exec()
+
+    def _on_login_success(self, cookies):
+        self.csdn_uploader.login(cookies)
+        self.image_handler.set_uploader(self.csdn_uploader)
+        self._update_login_status(True)
+
+        import json
+        self.settings.set_encrypted("csdn_cookies", json.dumps(cookies))
+
+        self.log("✅ CSDN 登录成功")
+        self._enable_buttons_after_login()
+
+    def _update_login_status(self, logged_in: bool):
+        if logged_in:
+            self.login_status.setText("CSDN: ✅ 已登录")
+            self.btn_login.setText("已登录 CSDN")
+        else:
+            self.login_status.setText("CSDN: ❌ 未登录")
+            self.btn_login.setText("登录 CSDN")
+
+    def _enable_buttons_after_login(self):
+        if self.current_result and len(self.current_result.images) > 0:
+            self.btn_upload.setEnabled(True)
+
+    def _upload_images(self):
+        if not self.current_result or not self.current_result.images:
+            QMessageBox.information(self, "提示", "当前文件没有需要上传的图片")
+            return
+
+        if not self.csdn_uploader.cookies:
+            QMessageBox.warning(self, "提示", "请先登录 CSDN")
+            return
+
+        images = self.current_result.images
+        self.log(f"🖼️ 开始上传 {len(images)} 张图片...")
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMaximum(len(images))
+        self.progress_bar.setValue(0)
+
+        self.worker = UploadWorker(self.image_handler, images)
+        self.worker.progress.connect(self._on_upload_progress)
+        self.worker.finished.connect(self._on_upload_finished)
+        self.worker.start()
+
+    def _on_upload_progress(self, current, total, path, success):
+        self.progress_bar.setValue(current)
+        status = "✅" if success else "❌"
+        self.log(f"  {status} [{current}/{total}] {Path(path).name}")
+
+    def _on_upload_finished(self, results):
+        self.progress_bar.setVisible(False)
+        success_count = sum(1 for r in results if r.success)
+        fail_count = len(results) - success_count
+        self.log(f"📊 上传完成: {success_count} 成功, {fail_count} 失败")
+
+        if success_count > 0 and self.current_content:
+            new_content = self.image_handler.replace_in_markdown(
+                self.current_content, results
+            )
+            self.current_content = new_content
+            self.original_view.setText(new_content)
+            self.current_result = parse_markdown(new_content)
+            self.log("✅ 已替换图片链接为 CSDN URL")
+
+            self.btn_export.setEnabled(True)
+
+        if fail_count > 0:
+            fail_paths = [r.original_path for r in results if not r.success]
+            for p in fail_paths:
+                self.log(f"  ❌ 上传失败: {p}")
