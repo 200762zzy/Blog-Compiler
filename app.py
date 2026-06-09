@@ -18,6 +18,7 @@ from login_window import CsdnLoginWindow
 from csdn_uploader import CSDNUploader
 from image_handler import ImageHandler
 from ai_rewriter import AIRewriter, RewriteConfig
+from exporter import Exporter
 
 
 class UploadWorker(QThread):
@@ -66,12 +67,13 @@ class MainWindow(QMainWindow):
         self.current_content = ""
         self.current_result = None
         self.rewritten_content = ""
+        self.final_content = ""
         self._setup_ui()
         self._restore_login()
         self._restore_ai_settings()
 
     def _setup_ui(self):
-        self.setWindowTitle("Blog Compiler v0.3")
+        self.setWindowTitle("Blog Compiler v0.4")
         self.resize(1300, 850)
 
         central = QWidget()
@@ -133,9 +135,21 @@ class MainWindow(QMainWindow):
         self.btn_ai.setEnabled(False)
         right_layout.addWidget(self.btn_ai)
 
-        self.btn_export = QPushButton("导出")
+        self.btn_pipeline = QPushButton("▶ 一键编译")
+        self.btn_pipeline.clicked.connect(self._run_pipeline)
+        self.btn_pipeline.setEnabled(False)
+        self.btn_pipeline.setToolTip("AI 改写 → 上传图片 → 导出 (全流程)")
+        right_layout.addWidget(self.btn_pipeline)
+
+        self.btn_export = QPushButton("导出文件")
+        self.btn_export.clicked.connect(self._export_file)
         self.btn_export.setEnabled(False)
         right_layout.addWidget(self.btn_export)
+
+        self.btn_copy = QPushButton("复制到剪贴板")
+        self.btn_copy.clicked.connect(self._export_clipboard)
+        self.btn_copy.setEnabled(False)
+        right_layout.addWidget(self.btn_copy)
 
         right_layout.addSpacing(10)
         log_label = QLabel("运行日志")
@@ -258,8 +272,11 @@ class MainWindow(QMainWindow):
             has_images = len(result.images) > 0
             self.btn_upload.setEnabled(has_images and self.csdn_uploader.cookies)
             self.btn_ai.setEnabled(self.ai_rewriter is not None)
+            self.btn_pipeline.setEnabled(self.ai_rewriter is not None)
             self.content_tabs.setTabEnabled(2, False)
             self.rewritten_content = ""
+            self.btn_export.setEnabled(False)
+            self.btn_copy.setEnabled(False)
 
     def _toggle_dark(self, checked):
         if checked:
@@ -494,6 +511,110 @@ class MainWindow(QMainWindow):
 
         QMessageBox.critical(self, "AI 改写失败", f"改写出错:\n{error_msg}")
         self.log(f"❌ AI 改写失败: {error_msg}")
+
+    def _run_pipeline(self):
+        if not self.current_content:
+            QMessageBox.information(self, "提示", "请先选择一个文件")
+            return
+
+        if not self.current_result:
+            QMessageBox.information(self, "提示", "请先解析文件")
+            return
+
+        if not self.ai_rewriter or not self.ai_rewriter.config.api_key:
+            QMessageBox.warning(self, "提示", "请先在设置中配置 AI API Key")
+            self._show_settings()
+            return
+
+        has_images = len(self.current_result.images) > 0
+        if has_images and not self.csdn_uploader.cookies:
+            QMessageBox.warning(self, "提示", "当前文件包含图片，请先登录 CSDN")
+            self._login_csdn()
+            return
+
+        self.log("🚀 开始一键编译...")
+
+        if self.ai_rewriter:
+            self.log("  Step 1/3: AI 改写...")
+            try:
+                rewritten = self.ai_rewriter.rewrite(self.current_content)
+                self.rewritten_content = rewritten
+                self.rewritten_view.setText(rewritten)
+                self.content_tabs.setTabEnabled(2, True)
+                self.content_tabs.setCurrentIndex(2)
+                self.log("  ✅ AI 改写完成")
+            except Exception as e:
+                QMessageBox.critical(self, "改写失败", str(e))
+                self.log(f"  ❌ AI 改写失败: {e}")
+                return
+
+        content = self.rewritten_content or self.current_content
+
+        if has_images and self.csdn_uploader.cookies:
+            self.log(f"  Step 2/3: 上传 {len(self.current_result.images)} 张图片...")
+            results = self.image_handler.upload_all(self.current_result.images)
+            success = [r for r in results if r.success]
+            if success:
+                content = self.image_handler.replace_in_markdown(content, success)
+                self.log(f"  ✅ 上传 {len(success)} 张图片成功")
+            failed = [r for r in results if not r.success]
+            if failed:
+                self.log(f"  ⚠️ {len(failed)} 张图片上传失败")
+
+        content = Exporter.adapt_csdn_format(content)
+
+        self.final_content = content
+
+        output_path = Exporter.get_export_filename(
+            self.file_paths[self.file_list.currentRow()]
+            if self.file_list.currentRow() >= 0
+            else "output.md"
+        )
+        Exporter.to_file(content, output_path)
+        self.log(f"  Step 3/3: 已导出到 {output_path}")
+        self.log("✅ 一键编译完成！")
+
+        self.btn_export.setEnabled(True)
+        self.btn_copy.setEnabled(True)
+
+        QMessageBox.information(self, "编译完成",
+            f"一键编译完成！\n\n导出文件: {output_path}")
+
+    def _export_file(self):
+        content = self.rewritten_content or self.current_content
+        if not content:
+            QMessageBox.information(self, "提示", "没有可导出的内容")
+            return
+
+        if not self.file_paths or self.file_list.currentRow() < 0:
+            default_name = "output.md"
+        else:
+            default_name = Exporter.get_export_filename(
+                self.file_paths[self.file_list.currentRow()]
+            )
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "导出文件", default_name,
+            "Markdown (*.md);;所有文件 (*)"
+        )
+        if not filepath:
+            return
+
+        content = Exporter.adapt_csdn_format(content)
+        Exporter.to_file(content, filepath)
+        self.log(f"📝 已导出到: {filepath}")
+        QMessageBox.information(self, "导出成功", f"文件已保存到:\n{filepath}")
+
+    def _export_clipboard(self):
+        content = self.rewritten_content or self.current_content
+        if not content:
+            QMessageBox.information(self, "提示", "没有可导出的内容")
+            return
+
+        content = Exporter.adapt_csdn_format(content)
+        Exporter.to_clipboard(content)
+        self.log("📋 已复制到剪贴板")
+        QMessageBox.information(self, "复制成功", "内容已复制到剪贴板，可直接粘贴到 CSDN 编辑器")
 
     def _restore_login(self):
         saved = self.settings.get_encrypted("csdn_cookies")
