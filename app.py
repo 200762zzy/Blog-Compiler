@@ -1,4 +1,4 @@
-import os
+import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -7,7 +7,9 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QTabWidget,
     QTextEdit, QToolBar, QStatusBar, QLabel, QPushButton,
-    QFileDialog, QMessageBox, QProgressBar
+    QFileDialog, QMessageBox, QProgressBar, QDialog, QLineEdit,
+    QComboBox, QFormLayout, QDialogButtonBox, QGroupBox,
+    QCheckBox
 )
 
 from parser import parse_markdown
@@ -15,6 +17,7 @@ from settings import Settings
 from login_window import CsdnLoginWindow
 from csdn_uploader import CSDNUploader
 from image_handler import ImageHandler
+from ai_rewriter import AIRewriter, RewriteConfig
 
 
 class UploadWorker(QThread):
@@ -36,6 +39,23 @@ class UploadWorker(QThread):
         self.progress.emit(current, total, path, success)
 
 
+class RewriteWorker(QThread):
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, rewriter, content):
+        super().__init__()
+        self.rewriter = rewriter
+        self.content = content
+
+    def run(self):
+        try:
+            result = self.rewriter.rewrite(self.content)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -45,11 +65,13 @@ class MainWindow(QMainWindow):
         self.image_handler = ImageHandler(self.csdn_uploader)
         self.current_content = ""
         self.current_result = None
+        self.rewritten_content = ""
         self._setup_ui()
         self._restore_login()
+        self._restore_ai_settings()
 
     def _setup_ui(self):
-        self.setWindowTitle("Blog Compiler v0.2")
+        self.setWindowTitle("Blog Compiler v0.3")
         self.resize(1300, 850)
 
         central = QWidget()
@@ -78,8 +100,14 @@ class MainWindow(QMainWindow):
         self.preview_placeholder.setAlignment(Qt.AlignCenter)
         preview_layout.addWidget(self.preview_placeholder)
 
+        self.rewritten_view = QTextEdit()
+        self.rewritten_view.setReadOnly(True)
+        self.rewritten_view.setFont(QFont("Consolas", 10))
+
         self.content_tabs.addTab(self.original_view, "原文")
         self.content_tabs.addTab(preview_tab, "预览")
+        self.content_tabs.addTab(self.rewritten_view, "改写后")
+        self.content_tabs.setTabEnabled(2, False)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -101,6 +129,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.btn_upload)
 
         self.btn_ai = QPushButton("AI 改写")
+        self.btn_ai.clicked.connect(self._ai_rewrite)
         self.btn_ai.setEnabled(False)
         right_layout.addWidget(self.btn_ai)
 
@@ -165,6 +194,12 @@ class MainWindow(QMainWindow):
         self.action_dark.triggered.connect(self._toggle_dark)
         toolbar.addAction(self.action_dark)
 
+        toolbar.addSeparator()
+
+        self.action_settings = QAction("⚙ 设置", self)
+        self.action_settings.triggered.connect(self._show_settings)
+        toolbar.addAction(self.action_settings)
+
     def _add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "选择 Markdown 文件", "", "Markdown (*.md *.markdown);;所有文件 (*)"
@@ -187,8 +222,11 @@ class MainWindow(QMainWindow):
         self.file_paths.clear()
         self.file_list.clear()
         self.original_view.clear()
+        self.rewritten_view.clear()
         self.current_content = ""
         self.current_result = None
+        self.rewritten_content = ""
+        self.content_tabs.setTabEnabled(2, False)
         self._update_status()
         self.log("已清空文件列表")
 
@@ -219,6 +257,9 @@ class MainWindow(QMainWindow):
             self.content_tabs.setTabText(0, f"原文 ({Path(filepath).name})")
             has_images = len(result.images) > 0
             self.btn_upload.setEnabled(has_images and self.csdn_uploader.cookies)
+            self.btn_ai.setEnabled(self.ai_rewriter is not None)
+            self.content_tabs.setTabEnabled(2, False)
+            self.rewritten_content = ""
 
     def _toggle_dark(self, checked):
         if checked:
@@ -323,6 +364,136 @@ class MainWindow(QMainWindow):
             path = url.toLocalFile()
             if path.lower().endswith(('.md', '.markdown')):
                 self._add_file(path)
+
+    def _restore_ai_settings(self):
+        api_key = self.settings.get_encrypted("ai_api_key")
+        api_base = self.settings.get("ai_api_base", "https://api.openai.com/v1")
+        model = self.settings.get("ai_model", "gpt-4o-mini")
+        if api_key:
+            config = RewriteConfig(
+                api_key=api_key, api_base=api_base, model=model
+            )
+            self.ai_rewriter = AIRewriter(config)
+            if self.current_content:
+                self.btn_ai.setEnabled(True)
+            self.log("🤖 AI 配置已加载")
+        else:
+            self.ai_rewriter = None
+
+    def _show_settings(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Blog Compiler 设置")
+        dialog.resize(500, 400)
+
+        layout = QVBoxLayout(dialog)
+
+        ai_group = QGroupBox("AI 改写设置")
+        ai_layout = QFormLayout(ai_group)
+
+        self.settings_api_key = QLineEdit()
+        self.settings_api_key.setEchoMode(QLineEdit.Password)
+        saved_key = self.settings.get_encrypted("ai_api_key") or ""
+        self.settings_api_key.setText(saved_key)
+        ai_layout.addRow("API Key:", self.settings_api_key)
+
+        self.settings_model = QComboBox()
+        models = AIRewriter.supported_models()
+        saved_model = self.settings.get("ai_model", "gpt-4o-mini")
+        for m in models:
+            self.settings_model.addItem(m["label"], m)
+            if m["value"] == saved_model:
+                self.settings_model.setCurrentIndex(self.settings_model.count() - 1)
+        ai_layout.addRow("模型:", self.settings_model)
+
+        self.settings_api_base = QLineEdit()
+        self.settings_api_base.setPlaceholderText("https://api.openai.com/v1")
+        saved_base = self.settings.get("ai_api_base", "https://api.openai.com/v1")
+        self.settings_api_base.setText(saved_base)
+        ai_layout.addRow("API 地址:", self.settings_api_base)
+
+        self.settings_model.currentIndexChanged.connect(self._on_model_changed)
+        layout.addWidget(ai_group)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(lambda: self._save_settings(dialog))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+    def _on_model_changed(self, index):
+        data = self.settings_model.currentData()
+        if data and data.get("base"):
+            self.settings_api_base.setText(data["base"])
+
+    def _save_settings(self, dialog):
+        api_key = self.settings_api_key.text().strip()
+        model_data = self.settings_model.currentData()
+        if model_data:
+            model = model_data["value"]
+            api_base = self.settings_api_base.text().strip() or model_data["base"]
+        else:
+            model = "gpt-4o-mini"
+            api_base = "https://api.openai.com/v1"
+
+        if api_key:
+            self.settings.set_encrypted("ai_api_key", api_key)
+        self.settings.set("ai_model", model)
+        self.settings.set("ai_api_base", api_base)
+
+        config = RewriteConfig(
+            api_key=api_key, api_base=api_base, model=model
+        )
+        self.ai_rewriter = AIRewriter(config)
+        if self.current_content:
+            self.btn_ai.setEnabled(True)
+
+        self.log("✅ AI 设置已保存")
+        dialog.accept()
+
+    def _ai_rewrite(self):
+        if not self.current_content:
+            QMessageBox.information(self, "提示", "请先选择一个文件")
+            return
+
+        if not self.ai_rewriter or not self.ai_rewriter.config.api_key:
+            QMessageBox.warning(self, "提示", "请先在设置中配置 API Key")
+            self._show_settings()
+            return
+
+        self.log("🤖 开始 AI 改写...")
+        self.status_label.setText("AI 改写中...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.btn_ai.setEnabled(False)
+
+        self.rewrite_worker = RewriteWorker(self.ai_rewriter, self.current_content)
+        self.rewrite_worker.finished.connect(self._on_rewrite_finished)
+        self.rewrite_worker.error.connect(self._on_rewrite_error)
+        self.rewrite_worker.start()
+
+    def _on_rewrite_finished(self, result):
+        self.rewritten_content = result
+        self.rewritten_view.setText(result)
+        self.content_tabs.setTabEnabled(2, True)
+        self.content_tabs.setCurrentIndex(2)
+
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
+        self.status_label.setText("就绪")
+        self.btn_ai.setEnabled(True)
+        self.btn_export.setEnabled(True)
+
+        self.log("✅ AI 改写完成")
+
+    def _on_rewrite_error(self, error_msg):
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
+        self.status_label.setText("就绪")
+        self.btn_ai.setEnabled(True)
+
+        QMessageBox.critical(self, "AI 改写失败", f"改写出错:\n{error_msg}")
+        self.log(f"❌ AI 改写失败: {error_msg}")
 
     def _restore_login(self):
         saved = self.settings.get_encrypted("csdn_cookies")
