@@ -556,8 +556,10 @@ class MainWindow(QMainWindow):
             self._show_settings()
             return
 
+        mode = self._get_image_mode()
         rewrite_content = self.current_content
-        if self._get_image_mode() == "upload" and self.current_result:
+
+        if mode == "upload" and self.current_result:
             self.log("🖼️ 开始上传图片到 scdn.io...")
             self.status_label.setText("正在上传图片...")
             QApplication.processEvents()
@@ -577,6 +579,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "图片上传失败", str(e))
                 self.log(f"❌ 图片上传失败: {e}")
                 return
+
+        system_prompt = self._build_system_prompt(mode)
+        self.ai_rewriter.config.system_prompt = system_prompt
 
         self.log("🤖 开始 AI 改写...")
         self.status_label.setText("AI 改写中...")
@@ -678,6 +683,32 @@ class MainWindow(QMainWindow):
     def _get_image_mode(self) -> str:
         checked = self.img_mode_group.checkedId()
         return {1: "alt", 2: "upload", 3: "keep"}.get(checked, "alt")
+
+    def _build_system_prompt(self, mode: str) -> str:
+        base = "你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：\n\n要求：\n1. 保持技术准确性，不要编造不存在的功能\n2. 语气专业但不枯燥，可以加入个人经验分享\n3. 为长段落添加小标题分隔，提升可读性\n4. **代码块、表格保持原样，不要修改其中的内容**\n5. 输出格式为 Markdown"
+
+        img_rules = {
+            "alt": (
+                "\n\n图片处理：\n"
+                "- 对于笔记中的图片 ![](path)：\n"
+                "  - 根据图片文件名和周围的文字内容，生成有意义的 alt 描述文本\n"
+                "  - **删除括号中的路径**，只保留 ![]()\n"
+                "  - 示例：![image-20260604.png](path) → ![终端输出截图：ls -la 命令的执行结果]\n"
+                "  - 如果无法推断图片内容，简单标注为 ![相关截图]"
+            ),
+            "upload": (
+                "\n\n图片处理：\n"
+                "- 对于笔记中的图片 ![](url)：\n"
+                "  - **保留 URL 不变**，不要删除或修改括号中的地址\n"
+                "  - 根据上下文优化 alt 描述文本（方括号中的内容）\n"
+                "  - 如果 alt 文本已有意义内容则保留，否则补充描述"
+            ),
+            "keep": (
+                "\n\n图片处理：\n"
+                "- **不要修改任何图片标记**，保持 ![](path) 原样不变"
+            ),
+        }
+        return base + img_rules.get(mode, img_rules["alt"])
 
     def _restore_csdn_settings(self):
         raw = self.settings.get("csdn_cookies")

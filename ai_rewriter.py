@@ -27,6 +27,7 @@ class RewriteConfig:
     temperature: float = 0.7
     max_tokens: int = 8192
     chunk_size: int = 3000
+    system_prompt: str = SYSTEM_PROMPT
 
 
 class AIRewriter:
@@ -64,7 +65,7 @@ class AIRewriter:
         payload = {
             "model": self.config.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.config.system_prompt},
                 {"role": "user", "content": content},
             ],
             "temperature": self.config.temperature,
