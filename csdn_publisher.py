@@ -70,7 +70,7 @@ def publish(
         "content": html_content,
         "readType": read_type,
         "tags": tags or " ",
-        "status": 0,
+        "status": 2 if draft else 0,
         "categories": categories,
         "type": article_type,
         "original_link": "",
