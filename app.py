@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self.current_result = None
         self._setup_ui()
         self._restore_ai_settings()
+        self._custom_tone_text = ""
         self.csdn_cookies = None
         self._restore_csdn_settings()
         self._update_csdn_status()
@@ -122,6 +123,14 @@ class MainWindow(QMainWindow):
         op_font.setBold(True)
         op_label.setFont(op_font)
         right_layout.addWidget(op_label)
+
+        tone_layout = QHBoxLayout()
+        tone_layout.addWidget(QLabel("改写语气"))
+        self.tone_combo = QComboBox()
+        self.tone_combo.addItems(["技术博主风", "学生笔记风", "教程风", "轻松口语化", "自定义..."])
+        self.tone_combo.currentTextChanged.connect(self._on_tone_changed)
+        tone_layout.addWidget(self.tone_combo, 1)
+        right_layout.addLayout(tone_layout)
 
         self.btn_ai = QPushButton("AI 改写")
         self.btn_ai.clicked.connect(self._ai_rewrite)
@@ -436,12 +445,35 @@ class MainWindow(QMainWindow):
             if path.lower().endswith(('.md', '.markdown')):
                 self._add_file(path)
 
+    def _on_tone_changed(self, text: str):
+        if text == "自定义...":
+            from PySide6.QtWidgets import QInputDialog
+            prev = self.settings.get("ai_tone_custom", "")
+            new_text, ok = QInputDialog.getMultiLineText(
+                self, "自定义语气", "请输入 persona 描述：", prev
+            )
+            if ok and new_text.strip():
+                self._custom_tone_text = new_text.strip()
+                self.settings.set("ai_tone_custom", self._custom_tone_text)
+            elif ok:
+                prev_idx = self.tone_combo.findText("技术博主风")
+                if prev_idx >= 0:
+                    self.tone_combo.blockSignals(True)
+                    self.tone_combo.setCurrentIndex(prev_idx)
+                    self.tone_combo.blockSignals(False)
+            self.settings.set("ai_tone", self.tone_combo.currentText())
+
     def _restore_ai_settings(self):
         api_key = self.settings.get_encrypted("ai_api_key")
         api_base = self.settings.get("ai_api_base", "https://api.openai.com/v1")
         model = self.settings.get("ai_model", "gpt-4o-mini")
         temperature = self.settings.get("ai_temperature", 0.7)
-        max_tokens = self.settings.get("ai_max_tokens", 8192)
+        max_tokens = self.settings.get("ai_max_tokens", 32768)
+        saved_tone = self.settings.get("ai_tone", "技术博主风")
+        self._custom_tone_text = self.settings.get("ai_tone_custom", "")
+        idx = self.tone_combo.findText(saved_tone)
+        if idx >= 0:
+            self.tone_combo.setCurrentIndex(idx)
         if api_key:
             config = RewriteConfig(
                 api_key=api_key, api_base=api_base, model=model,
@@ -504,7 +536,7 @@ class MainWindow(QMainWindow):
         self.settings_max_tokens = QSpinBox()
         self.settings_max_tokens.setRange(256, 65536)
         self.settings_max_tokens.setSingleStep(256)
-        self.settings_max_tokens.setValue(self.settings.get("ai_max_tokens", 8192))
+        self.settings_max_tokens.setValue(self.settings.get("ai_max_tokens", 32768))
         token_row.addWidget(self.settings_max_tokens)
         token_row.addWidget(QLabel("(单次最大输出 token)"))
         ai_layout.addRow("Max Tokens:", token_row)
@@ -545,6 +577,8 @@ class MainWindow(QMainWindow):
         max_tokens = self.settings_max_tokens.value()
         self.settings.set("ai_temperature", temperature)
         self.settings.set("ai_max_tokens", max_tokens)
+        self.settings.set("ai_tone", self.tone_combo.currentText())
+        self.settings.set("ai_tone_custom", self._custom_tone_text)
 
         config = RewriteConfig(
             api_key=api_key, api_base=api_base, model=model,
@@ -601,7 +635,7 @@ class MainWindow(QMainWindow):
             else:
                 self.log("🖼️ 无本地图片需上传，跳过")
 
-        system_prompt = self._build_system_prompt(mode)
+        system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
         self.ai_rewriter.config.system_prompt = system_prompt
 
         self.log("🤖 开始 AI 改写...")
@@ -712,8 +746,52 @@ class MainWindow(QMainWindow):
                 item.setText(text)
                 break
 
-    def _build_system_prompt(self, mode: str) -> str:
-        base = "你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：\n\n要求：\n1. 保持技术准确性，不要编造不存在的功能\n2. 语气专业但不枯燥，可以加入个人经验分享\n3. 为长段落添加小标题分隔，提升可读性\n4. **代码块、表格保持原样，不要修改其中的内容**\n5. 输出格式为 Markdown"
+    def _build_system_prompt(self, mode: str, tone: str = "技术博主风") -> str:
+        tone_prompts = {
+            "技术博主风": (
+                "你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：\n\n"
+                "要求：\n"
+                "1. 保持技术准确性，不要编造不存在的功能\n"
+                "2. 语气专业但不枯燥，可以加入个人经验分享\n"
+                "3. 为长段落添加小标题分隔，提升可读性\n"
+                "4. **代码块、表格保持原样，不要修改其中的内容**\n"
+                "5. 输出格式为 Markdown"
+            ),
+            "学生笔记风": (
+                "你是一名计算机专业的大学生。请将下面的笔记内容改写成一篇个人博客风格的技术文章。\n\n"
+                "要求：\n"
+                "1. 保持技术准确性\n"
+                "2. 语气像学生在学习和实践中写的记录分享，可以使用'我最近在学…'、'踩了个坑…'、'终于搞懂了…'这类真实个人表达\n"
+                "3. 语气亲切自然，不需要太过正式\n"
+                "4. 为长段落添加小标题分隔\n"
+                "5. **代码块、表格保持原样，不要修改其中的内容**\n"
+                "6. 输出格式为 Markdown"
+            ),
+            "教程风": (
+                "你是一位技术教程作者。请将下面的笔记内容改写成一篇手把手教学风格的技术教程。\n\n"
+                "要求：\n"
+                "1. 保持技术准确性\n"
+                "2. 步骤清晰、循序渐进，适合初学者跟着操作\n"
+                "3. 可以在步骤中加入'接下来我们…'、'运行这个命令后你会看到…'这类引导语\n"
+                "4. 为长段落添加小标题分隔\n"
+                "5. **代码块、表格保持原样，不要修改其中的内容**\n"
+                "6. 输出格式为 Markdown"
+            ),
+            "轻松口语化": (
+                "请将下面的笔记内容改写成一篇轻松的技术分享，风格像在跟朋友聊天。\n\n"
+                "要求：\n"
+                "1. 保持技术准确性\n"
+                "2. 语气轻松随意，可以用'我跟你说'、'真的绝了'、'懂的都懂'这类口语化表达\n"
+                "3. 不需要太正式的结构\n"
+                "4. **代码块、表格保持原样，不要修改其中的内容**\n"
+                "5. 输出格式为 Markdown"
+            ),
+        }
+
+        if tone == "自定义..." and self._custom_tone_text:
+            base = self._custom_tone_text
+        else:
+            base = tone_prompts.get(tone, tone_prompts["技术博主风"])
 
         img_rules = {
             "alt": (

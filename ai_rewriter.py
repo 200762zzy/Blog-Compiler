@@ -1,22 +1,6 @@
-import re
 from dataclasses import dataclass
 
 import httpx
-
-
-SYSTEM_PROMPT = """你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：
-
-要求：
-1. 保持技术准确性，不要编造不存在的功能
-2. 语气专业但不枯燥，可以加入个人经验分享
-3. 为长段落添加小标题分隔，提升可读性
-4. **代码块、表格保持原样，不要修改其中的内容**
-5. 对于笔记中的图片 ![](path)：
-   - 根据图片文件名和周围的文字内容，生成有意义的 alt 描述文本
-   - **删除括号中的路径**，只保留 ![]()
-   - 示例：![image-20260604.png](path) → ![终端输出截图：ls -la 命令的执行结果]
-   - 如果无法推断图片内容，简单标注为 ![相关截图]
-6. 输出格式为 Markdown"""
 
 
 @dataclass
@@ -25,9 +9,15 @@ class RewriteConfig:
     api_base: str = "https://api.openai.com/v1"
     model: str = "gpt-4o-mini"
     temperature: float = 0.7
-    max_tokens: int = 8192
-    chunk_size: int = 3000
-    system_prompt: str = SYSTEM_PROMPT
+    max_tokens: int = 32768
+    chunk_size: int = 8000
+    system_prompt: str = ""
+
+
+CONTINUATION_PROMPT = """请继续保持与上文一致的风格和语气，直接接着改写下面的内容。
+不要重复前文内容，不要加总结性语句，直接从断点处继续：
+
+{content}"""
 
 
 class AIRewriter:
@@ -46,26 +36,39 @@ class AIRewriter:
             raise ValueError("API Key 未设置，请在设置中配置")
 
         chunks = self._split_content(markdown_content)
-        results = []
+        all_parts = []
 
         for i, chunk in enumerate(chunks):
             if self._cancelled:
                 break
-            result = self._call_api(chunk)
-            results.append(result)
 
-        return "\n\n".join(results)
+            if i == 0:
+                full, reason = self._call_api(chunk)
+            else:
+                prompt = CONTINUATION_PROMPT.format(content=chunk)
+                full, reason = self._call_api(prompt, is_continuation=True)
 
-    def _call_api(self, content: str) -> str:
+            all_parts.append(full)
+
+            if reason == "length":
+                self.last_error = "output truncated by token limit, consider increasing max_tokens"
+
+        return "\n\n".join(all_parts)
+
+    def _call_api(self, content: str, is_continuation: bool = False) -> tuple[str, str]:
         self.last_error = ""
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
+        system_content = self.config.system_prompt
+        if is_continuation:
+            system_content = "你正在继续改写一篇文章，保持风格一致，直接继续。"
+
         payload = {
             "model": self.config.model,
             "messages": [
-                {"role": "system", "content": self.config.system_prompt},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": content},
             ],
             "temperature": self.config.temperature,
@@ -92,7 +95,8 @@ class AIRewriter:
         if not choices:
             raise RuntimeError(f"API 返回异常 (无 choices): {data}")
 
-        return choices[0]["message"]["content"].strip()
+        finish_reason = choices[0].get("finish_reason", "stop")
+        return choices[0]["message"]["content"].strip(), finish_reason
 
     def _split_content(self, content: str) -> list[str]:
         if len(content) <= self.config.chunk_size:
