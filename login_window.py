@@ -1,17 +1,14 @@
 """
-CSDN QR-code login window — LEGACY CODE.
+CSDN QR-code login window.
 
-This module is NOT imported by the main application (app.py).
-CSDN's login/upload flow has been removed because the upload endpoint is defunct.
-The code is retained for reference purposes only.
+Opens passport.csdn.net/login in a QWebEngineView, collects session cookies
+after successful QR scan, and emits them via login_successful signal.
 """
-
-import json
 
 from PySide6.QtCore import QUrl, Signal, QTimer
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QMessageBox
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineCookieStore
+from PySide6.QtWebEngineCore import QWebEngineProfile
 
 
 class CsdnLoginWindow(QDialog):
@@ -30,6 +27,9 @@ class CsdnLoginWindow(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
+        self._progress_label = QLabel("正在加载登录页面...")
+        layout.addWidget(self._progress_label)
+
         self.browser = QWebEngineView()
         layout.addWidget(self.browser)
 
@@ -38,53 +38,49 @@ class CsdnLoginWindow(QDialog):
         layout.addWidget(self.btn_cancel)
 
         profile = QWebEngineProfile.defaultProfile()
-        self.cookie_store = profile.cookieStore()
-        self.cookie_store.cookieAdded.connect(self._on_cookie_added)
+        cookie_store = profile.cookieStore()
+        cookie_store.cookieAdded.connect(self._on_cookie_added)
 
         self.browser.urlChanged.connect(self._on_url_changed)
         self.browser.load(QUrl("https://passport.csdn.net/login"))
 
-        self._progress_label = QLabel("正在加载登录页面...")
-        layout.insertWidget(1, self._progress_label)
-
-        QTimer.singleShot(30000, self._check_stuck)
+        QTimer.singleShot(120000, lambda: self._check_stuck())
 
     def _on_cookie_added(self, cookie):
-        name = cookie.name().data().decode()
-        value = cookie.value().data().decode()
+        name = cookie.name().data().decode(errors="replace")
+        value = cookie.value().data().decode(errors="replace")
         domain = cookie.domain()
         self.cookies[name] = {"value": value, "domain": domain}
 
     def _on_url_changed(self, url):
         url_str = url.toString()
-        if "passport.csdn.net" not in url_str and "login" not in url_str.lower():
-            if not self._login_detected:
-                self._login_detected = True
-                QTimer.singleShot(1500, self._finalize_login)
+        if self._login_detected:
+            return
+        if (
+            "passport.csdn.net" not in url_str
+            and "login" not in url_str
+            and url_str.startswith("https://www.csdn.net/")
+        ):
+            self._login_detected = True
+            self._progress_label.setText("登录成功，正在获取 Cookie...")
+            QTimer.singleShot(2000, self._finalize_login)
 
     def _finalize_login(self):
-        self.browser.page().runJavaScript(
-            "document.body.innerHTML",
-            self._check_logged_in
-        )
-
-    def _check_logged_in(self, html):
-        if not html:
-            return
         user_cookies = {
             k: v["value"]
             for k, v in self.cookies.items()
-            if "csdn" in v.get("domain", "")
+            if "csdn.net" in v.get("domain", "")
         }
         if user_cookies:
             self.login_successful.emit(user_cookies)
             QMessageBox.information(self, "登录成功", "CSDN 登录成功！")
             self.accept()
         else:
-            self._progress_label.setText("等待登录完成...")
+            self._progress_label.setText("等待 Cookie 完成...")
+            QTimer.singleShot(2000, self._finalize_login)
 
     def _check_stuck(self):
         if not self._login_detected:
             current_url = self.browser.url().toString()
-            if "login" in current_url.lower():
+            if "login" in current_url:
                 self._progress_label.setText("请扫描二维码完成登录...")

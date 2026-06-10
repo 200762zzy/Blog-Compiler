@@ -17,6 +17,9 @@ from parser import parse_markdown
 from settings import Settings
 from ai_rewriter import AIRewriter, RewriteConfig
 from exporter import Exporter
+from image_uploader import upload_images
+from csdn_publisher import publish as csdn_publish
+from login_window import CsdnLoginWindow
 
 
 class RewriteWorker(QThread):
@@ -57,6 +60,9 @@ class MainWindow(QMainWindow):
         self.current_result = None
         self._setup_ui()
         self._restore_ai_settings()
+        self.csdn_cookies = None
+        self._restore_csdn_settings()
+        self._update_csdn_status()
 
     def _setup_ui(self):
         self.setWindowTitle("Blog Compiler")
@@ -128,7 +134,42 @@ class MainWindow(QMainWindow):
         self.btn_copy.setEnabled(False)
         right_layout.addWidget(self.btn_copy)
 
-        right_layout.addSpacing(10)
+        right_layout.addSpacing(8)
+        img_label = QLabel("图片处理方式")
+        img_label.setFont(op_font)
+        right_layout.addWidget(img_label)
+
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
+        self.img_mode_group = QButtonGroup(self)
+        self.rb_img_alt = QRadioButton("生成alt文本(删除路径)")
+        self.rb_img_upload = QRadioButton("上传scdn.io图床并替换")
+        self.rb_img_keep = QRadioButton("保留原路径")
+        self.rb_img_alt.setChecked(True)
+        self.img_mode_group.addButton(self.rb_img_alt, 1)
+        self.img_mode_group.addButton(self.rb_img_upload, 2)
+        self.img_mode_group.addButton(self.rb_img_keep, 3)
+        right_layout.addWidget(self.rb_img_alt)
+        right_layout.addWidget(self.rb_img_upload)
+        right_layout.addWidget(self.rb_img_keep)
+
+        right_layout.addSpacing(8)
+        csdn_label = QLabel("CSDN 发布")
+        csdn_label.setFont(op_font)
+        right_layout.addWidget(csdn_label)
+
+        self.csdn_status = QLabel("未登录")
+        right_layout.addWidget(self.csdn_status)
+
+        self.btn_csdn_login = QPushButton("登录 CSDN")
+        self.btn_csdn_login.clicked.connect(self._login_csdn)
+        right_layout.addWidget(self.btn_csdn_login)
+
+        self.btn_publish = QPushButton("发布到 CSDN")
+        self.btn_publish.clicked.connect(self._publish_to_csdn)
+        self.btn_publish.setEnabled(False)
+        right_layout.addWidget(self.btn_publish)
+
+        right_layout.addSpacing(8)
         log_label = QLabel("运行日志")
         log_label.setFont(op_font)
         right_layout.addWidget(log_label)
@@ -261,12 +302,18 @@ class MainWindow(QMainWindow):
                 f"  {'  ' * (lvl-1)}H{lvl} {h}"
                 for lvl, h in result.headings[:20]
             )
+            img_names = "\n".join(
+                f"  📷 {Path(p).name}" for p in result.images[:10]
+            )
+            if len(result.images) > 10:
+                img_names += f"\n  ...及其他 {len(result.images) - 10} 张"
             self.preview_stats.setText(
                 f"📊 段落: {result.paragraph_count}  "
                 f"代码块: {result.code_block_count}  "
                 f"图片: {len(result.images)}  "
                 f"表格: {result.table_count}\n\n"
                 f"标题结构:\n{heading_lines if heading_lines else '  (无标题)'}"
+                f"\n\n图片列表:\n{img_names if img_names else '  (无)'}"
             )
             self.preview_render.setHtml(mistune.html(content))
 
@@ -509,6 +556,28 @@ class MainWindow(QMainWindow):
             self._show_settings()
             return
 
+        rewrite_content = self.current_content
+        if self._get_image_mode() == "upload" and self.current_result:
+            self.log("🖼️ 开始上传图片到 scdn.io...")
+            self.status_label.setText("正在上传图片...")
+            QApplication.processEvents()
+            try:
+                local_images = [p for p in self.current_result.images if Path(p).exists()]
+                if local_images:
+                    mapping = upload_images(local_images)
+                    for local_path, remote_url in mapping.items():
+                        rewrite_content = rewrite_content.replace(
+                            f"({local_path})", f"({remote_url})"
+                        )
+                        self.log(f"  ✅ {Path(local_path).name} → {remote_url}")
+                    self.log(f"🖼️ 图片上传完成 ({len(mapping)} 张)")
+                else:
+                    self.log("🖼️ 无本地图片需上传，跳过")
+            except Exception as e:
+                QMessageBox.warning(self, "图片上传失败", str(e))
+                self.log(f"❌ 图片上传失败: {e}")
+                return
+
         self.log("🤖 开始 AI 改写...")
         self.status_label.setText("AI 改写中...")
         self.progress_bar.setVisible(True)
@@ -518,7 +587,7 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(False)
         self.btn_copy.setEnabled(False)
 
-        self.rewrite_worker = RewriteWorker(self.ai_rewriter, self.current_content)
+        self.rewrite_worker = RewriteWorker(self.ai_rewriter, rewrite_content)
         self.rewrite_worker.finished.connect(self._on_rewrite_finished)
         self.rewrite_worker.error.connect(self._on_rewrite_error)
         self.rewrite_worker.cancelled.connect(self._on_rewrite_cancelled)
@@ -541,6 +610,7 @@ class MainWindow(QMainWindow):
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
+        self.btn_publish.setEnabled(True)
 
         self.log("✅ AI 改写完成")
 
@@ -604,3 +674,97 @@ class MainWindow(QMainWindow):
         Exporter.to_clipboard(content)
         self.log("📋 已复制到剪贴板")
         QMessageBox.information(self, "复制成功", "内容已复制到剪贴板，可直接粘贴到 CSDN 编辑器")
+
+    def _get_image_mode(self) -> str:
+        checked = self.img_mode_group.checkedId()
+        return {1: "alt", 2: "upload", 3: "keep"}.get(checked, "alt")
+
+    def _restore_csdn_settings(self):
+        raw = self.settings.get("csdn_cookies")
+        if raw:
+            try:
+                import json
+                self.csdn_cookies = json.loads(raw)
+                self.log("🔑 CSDN Cookie 已加载")
+            except Exception:
+                self.csdn_cookies = None
+
+    def _update_csdn_status(self):
+        if self.csdn_cookies:
+            self.csdn_status.setText("✅ 已登录")
+            self.btn_csdn_login.setText("切换账号")
+        else:
+            self.csdn_status.setText("❌ 未登录")
+            self.btn_csdn_login.setText("登录 CSDN")
+
+    def _login_csdn(self):
+        login_dlg = CsdnLoginWindow(self)
+        login_dlg.login_successful.connect(self._on_csdn_login)
+        login_dlg.exec()
+
+    def _on_csdn_login(self, cookies):
+        self.csdn_cookies = cookies
+        import json
+        self.settings.set("csdn_cookies", json.dumps(cookies))
+        self._update_csdn_status()
+        self.log("🔑 CSDN 登录成功")
+
+    def _publish_to_csdn(self):
+        content = self.rewritten_content or self.current_content
+        if not content:
+            QMessageBox.information(self, "提示", "没有可发布的内容")
+            return
+
+        if not self.csdn_cookies:
+            reply = QMessageBox.question(
+                self, "未登录",
+                "尚未登录 CSDN，是否现在登录？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self._login_csdn()
+            if not self.csdn_cookies:
+                return
+
+        filepath = (
+            self.file_paths[self.file_list.currentRow()]
+            if self.file_paths and self.file_list.currentRow() >= 0
+            else None
+        )
+        title = Path(filepath).stem if filepath else "未命名文章"
+
+        content = Exporter.adapt_csdn_format(content)
+        self.log(f"📤 正在发布到 CSDN: {title}")
+        self.status_label.setText("发布中...")
+        QApplication.processEvents()
+
+        try:
+            result = csdn_publish(
+                title=title,
+                markdown_content=content,
+                cookies=self.csdn_cookies,
+                is_new=True,
+            )
+            url = result.get("data", {}).get("url", "")
+            msg = "✅ 发布成功！"
+            if url:
+                msg += f"\n文章链接: {url}"
+            QMessageBox.information(self, "发布成功", msg)
+            self.log(f"✅ CSDN 发布成功: {url or ''}")
+        except PermissionError as e:
+            self.log(f"❌ 登录过期: {e}")
+            self.csdn_cookies = None
+            self.settings.set("csdn_cookies", "")
+            self._update_csdn_status()
+            reply = QMessageBox.question(
+                self, "登录过期",
+                f"{e}\n\n是否重新登录？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self._login_csdn()
+        except Exception as e:
+            self.log(f"❌ 发布失败: {e}")
+            QMessageBox.critical(self, "发布失败", str(e))
+        finally:
+            self.status_label.setText("就绪")
