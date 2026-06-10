@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 import mistune
+from image_handler import ImageHandler
 
 
 @dataclass
@@ -32,15 +33,15 @@ def parse_markdown(content: str) -> ParseResult:
         result.error = f"Markdown 解析失败: {e}"
         return result
 
-    images = re.findall(r'!\[.*?\]\((.+?)\)', content)
-    result.images = images
+    result.images = ImageHandler.extract_images(content)
 
     code_fences = re.findall(r'```', content)
     result.code_block_count = len(code_fences) // 2
 
     result.paragraph_count = len([p for p in content.split('\n\n') if p.strip()])
 
-    table_lines = [l for l in content.split('\n') if l.strip().startswith('|') and l.strip().endswith('|')]
+    stripped_content = re.sub(r'```[\s\S]*?```', '', content)
+    table_lines = [l for l in stripped_content.split('\n') if l.strip().startswith('|') and l.strip().endswith('|')]
     if table_lines:
         separator_lines = [l for l in table_lines if re.match(r'^\|[\s\-:|]+\|$', l.strip())]
         has_separator = any('---' in l or ':--' in l for l in separator_lines)

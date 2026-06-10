@@ -4,11 +4,14 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QSplitter, QListWidget, QListWidgetItem, QTabWidget,
-    QTextEdit, QToolBar, QStatusBar, QLabel, QPushButton,
-    QFileDialog, QMessageBox, QProgressBar, QDialog, QLineEdit,
-    QComboBox, QFormLayout, QDialogButtonBox, QGroupBox,
+    QSplitter, QListWidget, QListWidgetItem, QAbstractItemView,
+    QTabWidget, QTextEdit, QTextBrowser, QToolBar, QStatusBar,
+    QLabel, QPushButton, QFileDialog, QMessageBox, QProgressBar,
+    QDialog, QLineEdit, QComboBox, QFormLayout, QDialogButtonBox,
+    QGroupBox, QSpinBox, QDoubleSpinBox, QHBoxLayout,
 )
+
+import mistune
 
 from parser import parse_markdown
 from settings import Settings
@@ -19,18 +22,29 @@ from exporter import Exporter
 class RewriteWorker(QThread):
     finished = Signal(str)
     error = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, rewriter, content):
         super().__init__()
         self.rewriter = rewriter
         self.content = content
 
+    def cancel(self):
+        self.rewriter.cancel()
+        self.requestInterruption()
+
     def run(self):
         try:
             result = self.rewriter.rewrite(self.content)
-            self.finished.emit(result)
+            if self.isInterruptionRequested():
+                self.cancelled.emit()
+            else:
+                self.finished.emit(result)
         except Exception as e:
-            self.error.emit(str(e))
+            if self.isInterruptionRequested():
+                self.cancelled.emit()
+            else:
+                self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +73,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
 
         self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.file_list.setMinimumWidth(200)
         self.file_list.setMaximumWidth(350)
         self.file_list.itemClicked.connect(self._on_file_selected)
@@ -70,9 +85,14 @@ class MainWindow(QMainWindow):
 
         preview_tab = QWidget()
         preview_layout = QVBoxLayout(preview_tab)
-        self.preview_placeholder = QLabel("选择文件后查看解析信息")
-        self.preview_placeholder.setAlignment(Qt.AlignCenter)
-        preview_layout.addWidget(self.preview_placeholder)
+
+        self.preview_stats = QLabel("选择文件后自动生成预览")
+        self.preview_stats.setWordWrap(True)
+        preview_layout.addWidget(self.preview_stats)
+
+        self.preview_render = QTextBrowser()
+        self.preview_render.setOpenExternalLinks(False)
+        preview_layout.addWidget(self.preview_render, 1)
 
         self.rewritten_view = QTextEdit()
         self.rewritten_view.setReadOnly(True)
@@ -203,6 +223,13 @@ class MainWindow(QMainWindow):
         filepath = item.data(Qt.UserRole)
         try:
             content = Path(filepath).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                import locale
+                enc = locale.getpreferredencoding()
+                content = Path(filepath).read_text(encoding=enc)
+            except Exception:
+                content = Path(filepath).read_text(encoding="gbk")
         except Exception as e:
             QMessageBox.warning(self, "读取失败", f"无法读取文件:\n{e}")
             return
@@ -229,6 +256,19 @@ class MainWindow(QMainWindow):
             self.rewritten_content = ""
             self.btn_export.setEnabled(False)
             self.btn_copy.setEnabled(False)
+
+            heading_lines = "\n".join(
+                f"  {'  ' * (lvl-1)}H{lvl} {h}"
+                for lvl, h in result.headings[:20]
+            )
+            self.preview_stats.setText(
+                f"📊 段落: {result.paragraph_count}  "
+                f"代码块: {result.code_block_count}  "
+                f"图片: {len(result.images)}  "
+                f"表格: {result.table_count}\n\n"
+                f"标题结构:\n{heading_lines if heading_lines else '  (无标题)'}"
+            )
+            self.preview_render.setHtml(mistune.html(content))
 
     def _toggle_dark(self, checked):
         if checked:
@@ -338,9 +378,12 @@ class MainWindow(QMainWindow):
         api_key = self.settings.get_encrypted("ai_api_key")
         api_base = self.settings.get("ai_api_base", "https://api.openai.com/v1")
         model = self.settings.get("ai_model", "gpt-4o-mini")
+        temperature = self.settings.get("ai_temperature", 0.7)
+        max_tokens = self.settings.get("ai_max_tokens", 8192)
         if api_key:
             config = RewriteConfig(
-                api_key=api_key, api_base=api_base, model=model
+                api_key=api_key, api_base=api_base, model=model,
+                temperature=temperature, max_tokens=max_tokens,
             )
             self.ai_rewriter = AIRewriter(config)
             if self.current_content:
@@ -386,6 +429,24 @@ class MainWindow(QMainWindow):
         self.settings_api_base.setText(saved_base)
         ai_layout.addRow("API 地址:", self.settings_api_base)
 
+        temp_row = QHBoxLayout()
+        self.settings_temperature = QDoubleSpinBox()
+        self.settings_temperature.setRange(0.0, 2.0)
+        self.settings_temperature.setSingleStep(0.1)
+        self.settings_temperature.setValue(self.settings.get("ai_temperature", 0.7))
+        temp_row.addWidget(self.settings_temperature)
+        temp_row.addWidget(QLabel("(0~2, 越高越有创造性)"))
+        ai_layout.addRow("Temperature:", temp_row)
+
+        token_row = QHBoxLayout()
+        self.settings_max_tokens = QSpinBox()
+        self.settings_max_tokens.setRange(256, 65536)
+        self.settings_max_tokens.setSingleStep(256)
+        self.settings_max_tokens.setValue(self.settings.get("ai_max_tokens", 8192))
+        token_row.addWidget(self.settings_max_tokens)
+        token_row.addWidget(QLabel("(单次最大输出 token)"))
+        ai_layout.addRow("Max Tokens:", token_row)
+
         self.settings_model.currentIndexChanged.connect(self._on_model_changed)
         layout.addWidget(ai_group)
 
@@ -418,8 +479,14 @@ class MainWindow(QMainWindow):
         self.settings.set("ai_model", model)
         self.settings.set("ai_api_base", api_base)
 
+        temperature = self.settings_temperature.value()
+        max_tokens = self.settings_max_tokens.value()
+        self.settings.set("ai_temperature", temperature)
+        self.settings.set("ai_max_tokens", max_tokens)
+
         config = RewriteConfig(
-            api_key=api_key, api_base=api_base, model=model
+            api_key=api_key, api_base=api_base, model=model,
+            temperature=temperature, max_tokens=max_tokens,
         )
         self.ai_rewriter = AIRewriter(config)
         if self.current_content:
@@ -429,6 +496,10 @@ class MainWindow(QMainWindow):
         dialog.accept()
 
     def _ai_rewrite(self):
+        if self._is_rewriting():
+            self._cancel_rewrite()
+            return
+
         if not self.current_content:
             QMessageBox.information(self, "提示", "请先选择一个文件")
             return
@@ -442,12 +513,24 @@ class MainWindow(QMainWindow):
         self.status_label.setText("AI 改写中...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.btn_ai.setEnabled(False)
+        self.btn_ai.setText("取消改写")
+        self.btn_ai.setEnabled(True)
+        self.btn_export.setEnabled(False)
+        self.btn_copy.setEnabled(False)
 
         self.rewrite_worker = RewriteWorker(self.ai_rewriter, self.current_content)
         self.rewrite_worker.finished.connect(self._on_rewrite_finished)
         self.rewrite_worker.error.connect(self._on_rewrite_error)
+        self.rewrite_worker.cancelled.connect(self._on_rewrite_cancelled)
         self.rewrite_worker.start()
+
+    def _is_rewriting(self):
+        return hasattr(self, "rewrite_worker") and self.rewrite_worker.isRunning()
+
+    def _cancel_rewrite(self):
+        self.rewrite_worker.cancel()
+        self.rewrite_worker.wait(5000)
+        self.log("⏹️ AI 改写已取消")
 
     def _on_rewrite_finished(self, result):
         self.rewritten_content = result
@@ -455,23 +538,27 @@ class MainWindow(QMainWindow):
         self.content_tabs.setTabEnabled(2, True)
         self.content_tabs.setCurrentIndex(2)
 
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setRange(0, 100)
-        self.status_label.setText("就绪")
-        self.btn_ai.setEnabled(True)
+        self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
 
         self.log("✅ AI 改写完成")
 
     def _on_rewrite_error(self, error_msg):
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setRange(0, 100)
-        self.status_label.setText("就绪")
-        self.btn_ai.setEnabled(True)
+        self._reset_rewrite_ui()
 
         QMessageBox.critical(self, "AI 改写失败", f"改写出错:\n{error_msg}")
         self.log(f"❌ AI 改写失败: {error_msg}")
+
+    def _on_rewrite_cancelled(self):
+        self._reset_rewrite_ui()
+        self.log("⏹️ AI 改写已取消")
+
+    def _reset_rewrite_ui(self):
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
+        self.status_label.setText("就绪")
+        self.btn_ai.setText("AI 改写")
 
     def _export_file(self):
         content = self.rewritten_content or self.current_content
@@ -494,7 +581,16 @@ class MainWindow(QMainWindow):
             return
 
         content = Exporter.adapt_csdn_format(content)
-        Exporter.to_file(content, filepath)
+        def ask_overwrite(path):
+            reply = QMessageBox.question(
+                self, "文件已存在",
+                f"{path}\n\n文件已存在，是否覆盖？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            return reply == QMessageBox.Yes
+        result = Exporter.to_file(content, filepath, overwrite_callback=ask_overwrite)
+        if result is None:
+            return
         self.log(f"📝 已导出到: {filepath}")
         QMessageBox.information(self, "导出成功", f"文件已保存到:\n{filepath}")
 

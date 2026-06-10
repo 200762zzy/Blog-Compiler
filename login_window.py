@@ -1,3 +1,11 @@
+"""
+CSDN QR-code login window — LEGACY CODE.
+
+This module is NOT imported by the main application (app.py).
+CSDN's login/upload flow has been removed because the upload endpoint is defunct.
+The code is retained for reference purposes only.
+"""
+
 import json
 
 from PySide6.QtCore import QUrl, Signal, QTimer

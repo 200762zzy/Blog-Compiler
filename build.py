@@ -25,9 +25,7 @@ def main():
         "--clean",
         "--noconfirm",
         "--add-data", f"requirements.txt{Path(':' if sys.platform != 'win32' else ';')}.",
-        "--hidden-import", "PySide6.QtWebEngineWidgets",
-        "--hidden-import", "PySide6.QtWebEngineCore",
-        "--hidden-import", "PySide6.QtWebChannel",
+        # WebEngine 导入已移除（对应 login_window.py 未接入主程序，节省 ~70MB）
         str(repo_root / "main.py"),
     ]
 

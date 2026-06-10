@@ -1,11 +1,15 @@
 import re
 from pathlib import Path
+from image_handler import ImageHandler
 
 
 class Exporter:
     @staticmethod
-    def to_file(content: str, filepath: str):
+    def to_file(content: str, filepath: str, overwrite_callback=None):
         path = Path(filepath)
+        if path.exists() and overwrite_callback:
+            if not overwrite_callback(str(path)):
+                return None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return str(path)
@@ -35,22 +39,20 @@ class Exporter:
 
     @staticmethod
     def _ensure_codeblock_lang(content: str) -> str:
-        def add_lang(m):
-            fence = m.group(1)
-            rest = m.group(2)
-            if fence == "```" and not rest.startswith((" ", "\n", "")):
-                return m.group(0)
-            if fence == "```" and rest.strip() == "":
-                return "```text\n"
-            return m.group(0)
-
-        content = re.sub(
-            r'(```)[^\n]*(\n.*?)',
-            add_lang,
-            content,
-            flags=re.DOTALL
-        )
-        return content
+        lines = content.split("\n")
+        result = []
+        in_code = False
+        for line in lines:
+            if line.startswith("```"):
+                if not in_code:
+                    lang = line[3:].strip()
+                    if not lang:
+                        line = "```text"
+                    in_code = True
+                else:
+                    in_code = False
+            result.append(line)
+        return "\n".join(result)
 
     @staticmethod
     def _fix_table_format(content: str) -> str:
@@ -79,7 +81,7 @@ class Exporter:
             url_clean = re.sub(r'\s*=\s*\d+%\s*$', '', url_clean)
             return f"![{alt}]({url_clean})"
 
-        content = re.sub(r'!\[(.*?)\]\((.*?)\)', clean_dim, content)
+        content = ImageHandler.replace_images(content, clean_dim)
         return content
 
     @staticmethod

@@ -33,8 +33,14 @@ class AIRewriter:
     def __init__(self, config: RewriteConfig | None = None):
         self.config = config or RewriteConfig()
         self.last_error = ""
+        self._cancelled = False
+        self._client = httpx.Client(timeout=120.0)
+
+    def cancel(self):
+        self._cancelled = True
 
     def rewrite(self, markdown_content: str) -> str:
+        self._cancelled = False
         if not self.config.api_key:
             raise ValueError("API Key 未设置，请在设置中配置")
 
@@ -42,6 +48,8 @@ class AIRewriter:
         results = []
 
         for i, chunk in enumerate(chunks):
+            if self._cancelled:
+                break
             result = self._call_api(chunk)
             results.append(result)
 
@@ -63,12 +71,11 @@ class AIRewriter:
             "max_tokens": self.config.max_tokens,
         }
 
-        with httpx.Client(timeout=120.0) as client:
-            resp = client.post(
-                f"{self.config.api_base.rstrip('/')}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
+        resp = self._client.post(
+            f"{self.config.api_base.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
 
         if resp.status_code != 200:
             detail = f"HTTP {resp.status_code}"

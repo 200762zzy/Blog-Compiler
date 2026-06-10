@@ -1,3 +1,15 @@
+"""
+CSDN image uploader — LEGACY CODE.
+
+This module is NOT imported by the main application (app.py).
+CSDN's image upload endpoint (blog.csdn.net/phoenix/upload) returns 404,
+so this uploader has been replaced by scheme A: the AI rewriter generates
+descriptive alt-text and strips image paths; users manually drag images
+into the CSDN editor.
+
+The code is retained for reference in case CSDN's API is restored.
+"""
+
 import mimetypes
 import uuid
 from pathlib import Path
