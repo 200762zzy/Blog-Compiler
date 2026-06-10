@@ -19,14 +19,15 @@ def _guess_mime(path: Path) -> str:
     return _MIME_MAP.get(path.suffix.lower(), "image/png")
 
 
-def upload_image(local_path: str, timeout: float = 60.0) -> str:
+def upload_image(local_path: str, timeout: float = 60.0, cdn_domain: str = "edgeoneimg.cdn.sn") -> str:
     path = Path(local_path)
     if not path.exists():
         raise FileNotFoundError(f"图片不存在: {local_path}")
 
     with open(local_path, "rb") as f:
         files = {"image": (path.name, f, _guess_mime(path))}
-        resp = httpx.post(SCDN_API_URL, files=files, timeout=timeout)
+        data = {"cdn_domain": cdn_domain}
+        resp = httpx.post(SCDN_API_URL, files=files, data=data, timeout=timeout)
 
     if resp.status_code != 200:
         raise RuntimeError(

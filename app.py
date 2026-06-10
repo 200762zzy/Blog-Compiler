@@ -101,7 +101,6 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.preview_render, 1)
 
         self.rewritten_view = QTextEdit()
-        self.rewritten_view.setReadOnly(True)
         self.rewritten_view.setFont(QFont("Consolas", 10))
 
         self.content_tabs.addTab(self.original_view, "原文")
@@ -741,7 +740,7 @@ class MainWindow(QMainWindow):
         self.log("🔑 CSDN 登录成功")
 
     def _publish_to_csdn(self):
-        content = self.rewritten_content or self.current_content
+        content = self.rewritten_view.toPlainText() or self.current_content
         if not content:
             QMessageBox.information(self, "提示", "没有可发布的内容")
             return
@@ -762,14 +761,25 @@ class MainWindow(QMainWindow):
             if self.file_paths and self.file_list.currentRow() >= 0
             else None
         )
-        title = Path(filepath).stem if filepath else "未命名文章"
+
+        import re as _re
+        h1 = _re.search(r'^#\s+(.+)$', content, _re.MULTILINE)
+        default_title = h1.group(1).strip() if h1 else (
+            Path(filepath).stem if filepath else "未命名文章"
+        )
 
         content = Exporter.adapt_csdn_format(content)
-        from PySide6.QtWidgets import QLineEdit, QComboBox, QDialogButtonBox, QFormLayout
+        from PySide6.QtWidgets import (
+            QLineEdit, QComboBox, QCheckBox,
+            QDialogButtonBox, QFormLayout,
+        )
 
         pub_dialog = QDialog(self)
         pub_dialog.setWindowTitle("CSDN 发布设置")
         pub_layout = QFormLayout(pub_dialog)
+
+        pub_title = QLineEdit(default_title)
+        pub_layout.addRow("标题:", pub_title)
 
         pub_tags = QLineEdit("技术")
         pub_tags.setPlaceholderText("多个标签用逗号分隔")
@@ -783,6 +793,9 @@ class MainWindow(QMainWindow):
         pub_type.addItems(["原创", "转载", "翻译"])
         pub_layout.addRow("类型:", pub_type)
 
+        pub_base64 = QCheckBox("将图片转为 base64 嵌入（体积大但 100% 可靠）")
+        pub_layout.addRow(pub_base64)
+
         pub_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         pub_buttons.button(QDialogButtonBox.Ok).setText("发布")
         pub_buttons.accepted.connect(pub_dialog.accept)
@@ -792,10 +805,18 @@ class MainWindow(QMainWindow):
         if pub_dialog.exec() != QDialog.Accepted:
             return
 
+        title = pub_title.text().strip() or default_title
         tags = pub_tags.text().strip() or "技术"
         categories = pub_categories.text().strip()
         pub_type_str = pub_type.currentText()
         type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
+        use_base64 = pub_base64.isChecked()
+
+        if use_base64:
+            self.log("🖼️ 正在将图片转为 base64...")
+            self.status_label.setText("正在嵌入图片...")
+            QApplication.processEvents()
+            content = self._embed_images_base64(content)
 
         self.log(f"📤 正在发布到 CSDN: {title}")
         self.status_label.setText("发布中...")
@@ -834,3 +855,37 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "发布失败", str(e))
         finally:
             self.status_label.setText("就绪")
+
+    @staticmethod
+    def _embed_images_base64(markdown: str) -> str:
+        import base64 as _b64
+        import re as _re
+        img_re = _re.compile(r'!\[(.*?)\]\((.+?)\)')
+
+        def _replace(m):
+            alt = m.group(1)
+            url = m.group(2)
+            if url.startswith("data:"):
+                return m.group(0)
+            try:
+                p = Path(url)
+                if p.exists():
+                    data = p.read_bytes()
+                else:
+                    import httpx as _hx
+                    resp = _hx.get(url, timeout=30.0, follow_redirects=True)
+                    resp.raise_for_status()
+                    data = resp.content
+                b64 = _b64.b64encode(data).decode()
+                ext = p.suffix.lower() if p.suffix else ".png"
+                mime_map = {
+                    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".png": "image/png", ".gif": "image/gif",
+                    ".webp": "image/webp",
+                }
+                mime = mime_map.get(ext, "image/png")
+                return f"![{alt}](data:{mime};base64,{b64})"
+            except Exception:
+                return m.group(0)
+
+        return img_re.sub(_replace, markdown)
