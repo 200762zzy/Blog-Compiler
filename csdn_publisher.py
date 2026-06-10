@@ -43,6 +43,7 @@ def publish(
     categories: str = "",
     read_type: str = "public",
     article_type: str = "original",
+    draft: bool = False,
 ) -> dict:
     nonce = _uuid()
     parsed = urlparse(SAVE_URL)
@@ -80,7 +81,7 @@ def publish(
         "cover_type": 0,
         "is_new": 1 if is_new else 0,
         "vote_id": 0,
-        "pubStatus": "publish",
+        "pubStatus": "draft" if draft else "publish",
     }
 
     with httpx.Client(cookies=cookies, timeout=30.0) as client:

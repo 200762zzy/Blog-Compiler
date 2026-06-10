@@ -96,6 +96,11 @@ class MainWindow(QMainWindow):
         self.preview_stats.setWordWrap(True)
         preview_layout.addWidget(self.preview_stats)
 
+        self.image_status_list = QListWidget()
+        self.image_status_list.setMaximumHeight(120)
+        self.image_status_list.setVisible(False)
+        preview_layout.addWidget(self.image_status_list)
+
         self.preview_render = QTextBrowser()
         self.preview_render.setOpenExternalLinks(False)
         preview_layout.addWidget(self.preview_render, 1)
@@ -315,6 +320,17 @@ class MainWindow(QMainWindow):
                 f"\n\n图片列表:\n{img_names if img_names else '  (无)'}"
             )
             self.preview_render.setHtml(mistune.html(content))
+
+            self.image_status_list.clear()
+            if result.images:
+                self.image_status_list.setVisible(True)
+                for img_path in result.images:
+                    name = Path(img_path).name
+                    item = QListWidgetItem(f"⏳ {name}")
+                    item.setData(Qt.UserRole, img_path)
+                    self.image_status_list.addItem(item)
+            else:
+                self.image_status_list.setVisible(False)
 
     def _toggle_dark(self, checked):
         if checked:
@@ -562,22 +578,28 @@ class MainWindow(QMainWindow):
             self.log("🖼️ 开始上传图片到 scdn.io...")
             self.status_label.setText("正在上传图片...")
             QApplication.processEvents()
-            try:
-                local_images = [p for p in self.current_result.images if Path(p).exists()]
-                if local_images:
-                    mapping = upload_images(local_images)
-                    for local_path, remote_url in mapping.items():
-                        rewrite_content = rewrite_content.replace(
-                            f"({local_path})", f"({remote_url})"
-                        )
+            local_images = [p for p in self.current_result.images if Path(p).exists()]
+            if local_images:
+                from image_uploader import upload_image as _upload_one
+                mapping = {}
+                for local_path in local_images:
+                    self._set_image_status(local_path, "⏳ 上传中...")
+                    QApplication.processEvents()
+                    try:
+                        remote_url = _upload_one(local_path)
+                        mapping[local_path] = remote_url
+                        self._set_image_status(local_path, f"✅ {Path(local_path).name}")
                         self.log(f"  ✅ {Path(local_path).name} → {remote_url}")
-                    self.log(f"🖼️ 图片上传完成 ({len(mapping)} 张)")
-                else:
-                    self.log("🖼️ 无本地图片需上传，跳过")
-            except Exception as e:
-                QMessageBox.warning(self, "图片上传失败", str(e))
-                self.log(f"❌ 图片上传失败: {e}")
-                return
+                    except Exception as e:
+                        self._set_image_status(local_path, f"❌ {Path(local_path).name}")
+                        self.log(f"  ❌ {Path(local_path).name}: {e}")
+                for local_path, remote_url in mapping.items():
+                    rewrite_content = rewrite_content.replace(
+                        f"({local_path})", f"({remote_url})"
+                    )
+                self.log(f"🖼️ 图片上传完成 ({len(mapping)}/{len(local_images)} 张)")
+            else:
+                self.log("🖼️ 无本地图片需上传，跳过")
 
         system_prompt = self._build_system_prompt(mode)
         self.ai_rewriter.config.system_prompt = system_prompt
@@ -682,6 +704,13 @@ class MainWindow(QMainWindow):
     def _get_image_mode(self) -> str:
         checked = self.img_mode_group.checkedId()
         return {1: "alt", 2: "upload", 3: "keep"}.get(checked, "alt")
+
+    def _set_image_status(self, img_path: str, text: str):
+        for i in range(self.image_status_list.count()):
+            item = self.image_status_list.item(i)
+            if item and item.data(Qt.UserRole) == img_path:
+                item.setText(text)
+                break
 
     def _build_system_prompt(self, mode: str) -> str:
         base = "你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：\n\n要求：\n1. 保持技术准确性，不要编造不存在的功能\n2. 语气专业但不枯燥，可以加入个人经验分享\n3. 为长段落添加小标题分隔，提升可读性\n4. **代码块、表格保持原样，不要修改其中的内容**\n5. 输出格式为 Markdown"
@@ -796,6 +825,14 @@ class MainWindow(QMainWindow):
         pub_base64 = QCheckBox("将图片转为 base64 嵌入（体积大但 100% 可靠）")
         pub_layout.addRow(pub_base64)
 
+        pub_draft = QCheckBox("保存为草稿（不发布，不计入每日限制）")
+        pub_draft.toggled.connect(
+            lambda checked: pub_buttons.button(QDialogButtonBox.Ok).setText(
+                "保存草稿" if checked else "发布"
+            )
+        )
+        pub_layout.addRow(pub_draft)
+
         pub_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         pub_buttons.button(QDialogButtonBox.Ok).setText("发布")
         pub_buttons.accepted.connect(pub_dialog.accept)
@@ -811,6 +848,7 @@ class MainWindow(QMainWindow):
         pub_type_str = pub_type.currentText()
         type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
         use_base64 = pub_base64.isChecked()
+        is_draft = pub_draft.isChecked()
 
         if use_base64:
             self.log("🖼️ 正在将图片转为 base64...")
@@ -831,6 +869,7 @@ class MainWindow(QMainWindow):
                 tags=tags,
                 categories=categories,
                 article_type=type_map.get(pub_type_str, "original"),
+                draft=is_draft,
             )
             url = result.get("data", {}).get("url", "")
             msg = "✅ 发布成功！"
