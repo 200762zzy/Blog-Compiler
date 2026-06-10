@@ -99,7 +99,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 下载即用
 
-[![Download](https://img.shields.io/badge/Download-v1.1.1-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
+[![Download](https://img.shields.io/badge/Download-v1.2.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
 
 1. 下载 `BlogCompiler.exe`
 2. 双击运行（无需安装）
