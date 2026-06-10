@@ -42,6 +42,7 @@ def publish(
     tags: str = "",
     categories: str = "",
     read_type: str = "public",
+    article_type: str = "original",
 ) -> dict:
     nonce = _uuid()
     parsed = urlparse(SAVE_URL)
@@ -70,7 +71,7 @@ def publish(
         "tags": tags or " ",
         "status": 0,
         "categories": categories,
-        "type": "original",
+        "type": article_type,
         "original_link": "",
         "authorized_status": False,
         "not_auto_saved": "1",

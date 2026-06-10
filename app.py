@@ -734,6 +734,38 @@ class MainWindow(QMainWindow):
         title = Path(filepath).stem if filepath else "未命名文章"
 
         content = Exporter.adapt_csdn_format(content)
+        from PySide6.QtWidgets import QLineEdit, QComboBox, QDialogButtonBox, QFormLayout
+
+        pub_dialog = QDialog(self)
+        pub_dialog.setWindowTitle("CSDN 发布设置")
+        pub_layout = QFormLayout(pub_dialog)
+
+        pub_tags = QLineEdit("技术")
+        pub_tags.setPlaceholderText("多个标签用逗号分隔")
+        pub_layout.addRow("标签:", pub_tags)
+
+        pub_categories = QLineEdit()
+        pub_categories.setPlaceholderText("可选")
+        pub_layout.addRow("分类:", pub_categories)
+
+        pub_type = QComboBox()
+        pub_type.addItems(["原创", "转载", "翻译"])
+        pub_layout.addRow("类型:", pub_type)
+
+        pub_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        pub_buttons.button(QDialogButtonBox.Ok).setText("发布")
+        pub_buttons.accepted.connect(pub_dialog.accept)
+        pub_buttons.rejected.connect(pub_dialog.reject)
+        pub_layout.addRow(pub_buttons)
+
+        if pub_dialog.exec() != QDialog.Accepted:
+            return
+
+        tags = pub_tags.text().strip() or "技术"
+        categories = pub_categories.text().strip()
+        pub_type_str = pub_type.currentText()
+        type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
+
         self.log(f"📤 正在发布到 CSDN: {title}")
         self.status_label.setText("发布中...")
         QApplication.processEvents()
@@ -744,6 +776,9 @@ class MainWindow(QMainWindow):
                 markdown_content=content,
                 cookies=self.csdn_cookies,
                 is_new=True,
+                tags=tags,
+                categories=categories,
+                article_type=type_map.get(pub_type_str, "original"),
             )
             url = result.get("data", {}).get("url", "")
             msg = "✅ 发布成功！"
