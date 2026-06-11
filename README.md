@@ -92,6 +92,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 - 改写前后对比视图
 - 改写后内容可编辑
 - 图片上传状态实时显示
+<img width="2555" height="1523" alt="image" src="https://github.com/user-attachments/assets/4bc50c79-1717-4d18-a1ae-48f341f61f24" />
 
 ---
 
