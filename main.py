@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from app import MainWindow
 
 
+VERSION = "1.3.0"
 CRASH_LOG = Path.home() / ".blog-compiler" / "crash.log"
 
 
