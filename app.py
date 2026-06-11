@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QUrl
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QByteArray
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices, QPixmap, QPainter
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QSpinBox, QDoubleSpinBox, QHBoxLayout, QFrame,
 )
 
-from PySide6.QtSvg import QSvgWidget
+from PySide6.QtSvg import QSvgRenderer
 
 import mistune
 
@@ -311,11 +311,16 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(4)
 
-        logo = QSvgWidget()
-        logo_data = b'<svg viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="6" fill="#06B6D4"/><text x="16" y="22" text-anchor="middle" fill="white" font-size="18" font-weight="bold" font-family="sans-serif">B</text></svg>'
-        logo.load(logo_data)
-        logo.setFixedSize(28, 28)
-        layout.addWidget(logo)
+        logo_data = QByteArray(b'<svg viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="6" fill="#06B6D4"/><text x="16" y="22" text-anchor="middle" fill="white" font-size="18" font-weight="bold" font-family="sans-serif">B</text></svg>')
+        logo_pix = QPixmap(28, 28)
+        logo_pix.fill(Qt.transparent)
+        p = QPainter(logo_pix)
+        QSvgRenderer(logo_data).render(p)
+        p.end()
+        logo_label = QLabel()
+        logo_label.setPixmap(logo_pix)
+        logo_label.setFixedSize(28, 28)
+        layout.addWidget(logo_label)
         layout.addSpacing(8)
 
         title = QLabel("Blog Compiler")
