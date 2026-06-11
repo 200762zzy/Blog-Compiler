@@ -23,7 +23,7 @@ from image_uploader import upload_images
 from csdn_publisher import publish as csdn_publish
 from login_window import CsdnLoginWindow
 from icons import get as get_icon
-from main import VERSION
+from version import VERSION
 
 
 class UpdateChecker(QThread):
