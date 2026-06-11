@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QByteArray
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices, QPixmap, QPainter
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices, QPixmap, QPainter, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -97,6 +97,15 @@ class MainWindow(QMainWindow):
         self._restore_csdn_settings()
         self._update_csdn_status()
         self._check_for_updates()
+
+        ico = QIcon("icon.ico")
+        if ico.isNull():
+            ico = QIcon(str(Path(__file__).parent / "icon.ico"))
+        if ico.isNull():
+            import sys as _sys
+            base = getattr(_sys, '_MEIPASS', Path(__file__).parent)
+            ico = QIcon(str(Path(base) / "icon.ico"))
+        self.setWindowIcon(ico)
 
     def _check_for_updates(self):
         self._updater = UpdateChecker()
