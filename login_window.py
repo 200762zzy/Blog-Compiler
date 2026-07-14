@@ -7,8 +7,6 @@ after successful QR scan, and emits them via login_successful signal.
 
 from PySide6.QtCore import QUrl, Signal, QTimer
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QMessageBox
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineProfile
 
 
 class CsdnLoginWindow(QDialog):
@@ -30,6 +28,7 @@ class CsdnLoginWindow(QDialog):
         self._progress_label = QLabel("正在加载登录页面...")
         layout.addWidget(self._progress_label)
 
+        from PySide6.QtWebEngineWidgets import QWebEngineView
         self.browser = QWebEngineView()
         layout.addWidget(self.browser)
 
@@ -37,6 +36,7 @@ class CsdnLoginWindow(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
         layout.addWidget(self.btn_cancel)
 
+        from PySide6.QtWebEngineCore import QWebEngineProfile
         profile = QWebEngineProfile.defaultProfile()
         cookie_store = profile.cookieStore()
         cookie_store.cookieAdded.connect(self._on_cookie_added)

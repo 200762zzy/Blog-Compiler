@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QMessageBox, QProgressBar,
     QDialog, QLineEdit, QComboBox, QFormLayout, QDialogButtonBox,
     QGroupBox, QSpinBox, QDoubleSpinBox, QHBoxLayout, QFrame,
+    QCheckBox, QPlainTextEdit,
 )
 
 from PySide6.QtSvg import QSvgRenderer
@@ -20,8 +21,6 @@ from settings import Settings
 from ai_rewriter import AIRewriter, RewriteConfig
 from exporter import Exporter
 from image_uploader import upload_images
-from csdn_publisher import publish as csdn_publish
-from login_window import CsdnLoginWindow
 from icons import get as get_icon
 from version import VERSION
 
@@ -90,6 +89,7 @@ class MainWindow(QMainWindow):
         self.current_content = ""
         self.rewritten_content = ""
         self.current_result = None
+        self.drafts = []
         self._setup_ui()
         self._restore_ai_settings()
         self._custom_tone_text = ""
@@ -236,6 +236,20 @@ class MainWindow(QMainWindow):
         self.btn_copy.clicked.connect(self._export_clipboard)
         self.btn_copy.setEnabled(False)
         cl_ai.addWidget(self.btn_copy)
+
+        draft_row = QHBoxLayout()
+        draft_row.setSpacing(4)
+        self.draft_combo = QComboBox()
+        self.draft_combo.setObjectName("draftCombo")
+        self.draft_combo.setPlaceholderText("草稿历史")
+        self.draft_combo.setEnabled(False)
+        draft_row.addWidget(self.draft_combo, 1)
+        self.btn_restore_draft = QPushButton("恢复")
+        self.btn_restore_draft.setObjectName("draftBtn")
+        self.btn_restore_draft.setEnabled(False)
+        self.btn_restore_draft.clicked.connect(self._switch_draft)
+        draft_row.addWidget(self.btn_restore_draft)
+        cl_ai.addLayout(draft_row)
 
         # Card 2: 图片处理
         card_img, cl_img = _make_card("图片处理")
@@ -655,7 +669,7 @@ class MainWindow(QMainWindow):
                 color: #94A3B8;
                 border-bottom: 2px solid #3e3e3e;
             }
-            QComboBox {
+            QComboBox, QComboBox#draftCombo {
                 background-color: #1e1e1e;
                 color: #E2E8F0;
                 border: 1px solid #3e3e3e;
@@ -686,6 +700,23 @@ class MainWindow(QMainWindow):
                 selection-background-color: #06B6D4;
                 selection-color: white;
                 padding: 4px;
+            }
+            QPushButton#draftBtn {
+                background-color: transparent;
+                color: #94A3B8;
+                border: 1px solid #3e3e3e;
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+                min-width: 40px;
+            }
+            QPushButton#draftBtn:hover {
+                background-color: #2e2e2e;
+                color: #E2E8F0;
+            }
+            QPushButton#draftBtn:disabled {
+                color: #555555;
+                border-color: #333333;
             }
             QRadioButton {
                 spacing: 8px;
@@ -1023,7 +1054,7 @@ class MainWindow(QMainWindow):
                 color: #64748B;
                 border-bottom: 2px solid #CBD5E1;
             }
-            QComboBox {
+            QComboBox, QComboBox#draftCombo {
                 background-color: #FFFFFF;
                 color: #1E293B;
                 border: 1px solid #CBD5E1;
@@ -1054,6 +1085,23 @@ class MainWindow(QMainWindow):
                 selection-background-color: #0891B2;
                 selection-color: white;
                 padding: 4px;
+            }
+            QPushButton#draftBtn {
+                background-color: transparent;
+                color: #64748B;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+                min-width: 40px;
+            }
+            QPushButton#draftBtn:hover {
+                background-color: #F1F5F9;
+                color: #1E293B;
+            }
+            QPushButton#draftBtn:disabled {
+                color: #CBD5E1;
+                border-color: #E2E8F0;
             }
             QRadioButton {
                 spacing: 8px;
@@ -1339,6 +1387,25 @@ class MainWindow(QMainWindow):
         self.settings_model.currentIndexChanged.connect(self._on_model_changed)
         layout.addWidget(ai_group)
 
+        prompt_group = QGroupBox("自定义 System Prompt")
+        prompt_layout = QVBoxLayout(prompt_group)
+        self.settings_custom_prompt = QPlainTextEdit()
+        self.settings_custom_prompt.setPlaceholderText(
+            "在此处编写自定义 system prompt，留空则使用语气预设\n\n"
+            "注意：prompt 中必须包含图片处理指令，否则图片可能不会被正确处理"
+        )
+        self.settings_custom_prompt.setPlainText(
+            self.settings.get("ai_custom_prompt", "")
+        )
+        self.settings_custom_prompt.setMinimumHeight(120)
+        prompt_layout.addWidget(self.settings_custom_prompt)
+        self.settings_use_custom = QCheckBox("使用自定义 prompt（代替语气预设）")
+        self.settings_use_custom.setChecked(
+            self.settings.get("ai_use_custom_prompt", False)
+        )
+        prompt_layout.addWidget(self.settings_use_custom)
+        layout.addWidget(prompt_group)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(lambda: self._save_settings(dialog))
         buttons.rejected.connect(dialog.reject)
@@ -1374,6 +1441,8 @@ class MainWindow(QMainWindow):
         self.settings.set("ai_max_tokens", max_tokens)
         self.settings.set("ai_tone", self.tone_combo.currentText())
         self.settings.set("ai_tone_custom", self._custom_tone_text)
+        self.settings.set("ai_custom_prompt", self.settings_custom_prompt.toPlainText())
+        self.settings.set("ai_use_custom_prompt", self.settings_use_custom.isChecked())
 
         config = RewriteConfig(
             api_key=api_key, api_base=api_base, model=model,
@@ -1399,6 +1468,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先在设置中配置 API Key")
             self._show_settings()
             return
+
+        cursor = self.original_view.textCursor()
+        if cursor.hasSelection():
+            reply = QMessageBox.question(
+                self, "改写范围",
+                "检测到您在原文中选中了一段文字，是否仅改写选中区域？\n\n"
+                "选「否」则改写全文。",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self._rewrite_selection(cursor)
+                return
 
         mode = self._get_image_mode()
         rewrite_content = self.current_content
@@ -1448,6 +1529,77 @@ class MainWindow(QMainWindow):
         self.rewrite_worker.cancelled.connect(self._on_rewrite_cancelled)
         self.rewrite_worker.start()
 
+    def _rewrite_selection(self, cursor):
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        full_text = self.original_view.toPlainText()
+        selected = full_text[start:end]
+        if not selected.strip():
+            QMessageBox.information(self, "提示", "选中内容为空")
+            return
+
+        mode = self._get_image_mode()
+        rewrite_content = selected
+
+        if mode == "upload" and self.current_result:
+            local_images = [p for p in self.current_result.images if Path(p).exists()]
+            local_in_sel = [p for p in local_images if p in selected]
+            if local_in_sel:
+                self.log(f"🖼️ 上传选中区域内的图片 ({len(local_in_sel)} 张)...")
+                self.status_label.setText("正在上传图片...")
+                QApplication.processEvents()
+                from image_uploader import upload_image as _upload_one
+                mapping = {}
+                for local_path in local_in_sel:
+                    try:
+                        remote_url = _upload_one(local_path)
+                        mapping[local_path] = remote_url
+                        self.log(f"  ✅ {Path(local_path).name} → {remote_url}")
+                    except Exception as e:
+                        self.log(f"  ❌ {Path(local_path).name}: {e}")
+                for local_path, remote_url in mapping.items():
+                    rewrite_content = rewrite_content.replace(
+                        f"({local_path})", f"({remote_url})"
+                    )
+
+        system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
+        self.ai_rewriter.config.system_prompt = system_prompt
+
+        self.log("🤖 开始改写选中区域...")
+        self.status_label.setText("改写选中区域...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.btn_ai.setText("取消改写")
+        self.btn_ai.setEnabled(True)
+        self.btn_export.setEnabled(False)
+        self.btn_copy.setEnabled(False)
+
+        self.rewrite_worker = RewriteWorker(self.ai_rewriter, rewrite_content)
+        self.rewrite_worker.finished.connect(
+            lambda result: self._on_selection_rewritten(result, full_text, start, end)
+        )
+        self.rewrite_worker.error.connect(self._on_rewrite_error)
+        self.rewrite_worker.cancelled.connect(self._on_rewrite_cancelled)
+        self.rewrite_worker.start()
+
+    def _on_selection_rewritten(self, rewritten, full_text, start, end):
+        if self.rewrite_worker.isInterruptionRequested():
+            self._on_rewrite_cancelled()
+            return
+        new_full = full_text[:start] + rewritten + full_text[end:]
+        self.current_content = new_full
+        self.original_view.setText(new_full)
+        self.rewritten_content = new_full
+        self.rewritten_view.setText(rewritten)
+        self.content_tabs.setTabEnabled(2, True)
+        self.content_tabs.setCurrentIndex(2)
+        self._reset_rewrite_ui()
+        self.btn_export.setEnabled(True)
+        self.btn_copy.setEnabled(True)
+        self.btn_publish.setEnabled(True)
+        self._save_draft(new_full)
+        self.log("✅ 选中区域改写完成，已替换回原文")
+
     def _is_rewriting(self):
         return hasattr(self, "rewrite_worker") and self.rewrite_worker.isRunning()
 
@@ -1467,6 +1619,7 @@ class MainWindow(QMainWindow):
         self.btn_copy.setEnabled(True)
         self.btn_publish.setEnabled(True)
 
+        self._save_draft(result)
         self.log("✅ AI 改写完成")
 
     def _on_rewrite_error(self, error_msg):
@@ -1484,6 +1637,44 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.status_label.setText("就绪")
         self.btn_ai.setText("AI 改写")
+
+    def _save_draft(self, content=None):
+        from datetime import datetime
+        content = content or self.rewritten_content or self.current_content
+        if not content:
+            return
+        ts = datetime.now().strftime("%H:%M")
+        v = len(self.drafts) + 1
+        self.drafts.append({"v": v, "content": content, "ts": ts})
+        self._update_draft_combo()
+        self.draft_combo.setCurrentIndex(len(self.drafts) - 1)
+        self.log(f"📝 草稿 v{v}已保存 ({ts})")
+
+    def _update_draft_combo(self):
+        self.draft_combo.clear()
+        if not self.drafts:
+            self.draft_combo.setEnabled(False)
+            self.btn_restore_draft.setEnabled(False)
+            return
+        self.draft_combo.setEnabled(True)
+        self.btn_restore_draft.setEnabled(True)
+        for d in self.drafts:
+            preview = d["content"][:40].replace("\n", " ").strip()
+            self.draft_combo.addItem(f"v{d['v']} ({d['ts']}) — {preview}...", d["v"])
+
+    def _switch_draft(self):
+        idx = self.draft_combo.currentIndex()
+        if idx < 0 or idx >= len(self.drafts):
+            return
+        draft = self.drafts[idx]
+        self.rewritten_content = draft["content"]
+        self.rewritten_view.setText(draft["content"])
+        self.content_tabs.setTabEnabled(2, True)
+        self.content_tabs.setCurrentIndex(2)
+        self.btn_export.setEnabled(True)
+        self.btn_copy.setEnabled(True)
+        self.btn_publish.setEnabled(True)
+        self.log(f"📂 已恢复草稿 v{draft['v']} ({draft['ts']})")
 
     def _export_file(self):
         content = self.rewritten_content or self.current_content
@@ -1542,6 +1733,29 @@ class MainWindow(QMainWindow):
                 break
 
     def _build_system_prompt(self, mode: str, tone: str = "技术博主风") -> str:
+        custom_prompt = self.settings.get("ai_custom_prompt", "").strip()
+        use_custom = self.settings.get("ai_use_custom_prompt", False)
+        if use_custom and custom_prompt:
+            img_rules = {
+                "alt": (
+                    "\n\n图片处理：\n"
+                    "- 对于笔记中的图片 ![](path)：\n"
+                    "  - 根据上下文生成有意义的 alt 描述文本\n"
+                    "  - **删除括号中的路径**，只保留 ![]()\n"
+                    "  - 如果无法推断内容，标注为 ![相关截图]"
+                ),
+                "upload": (
+                    "\n\n图片处理：\n"
+                    "- 对于笔记中的图片 ![](url)：\n"
+                    "  - **保留 URL 不变**，不要删除或修改括号中的地址\n"
+                    "  - 根据上下文优化 alt 描述文本"
+                ),
+                "keep": (
+                    "\n\n图片处理：\n"
+                    "- **不要修改任何图片标记**，保持原样不变"
+                ),
+            }
+            return custom_prompt + img_rules.get(mode, img_rules["alt"])
         tone_prompts = {
             "技术博主风": (
                 "你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：\n\n"
@@ -1630,6 +1844,7 @@ class MainWindow(QMainWindow):
             self.btn_csdn_login.setText("登录 CSDN")
 
     def _login_csdn(self):
+        from login_window import CsdnLoginWindow
         login_dlg = CsdnLoginWindow(self)
         login_dlg.login_successful.connect(self._on_csdn_login)
         login_dlg.exec()
@@ -1734,6 +1949,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
+            from csdn_publisher import publish as csdn_publish
             result = csdn_publish(
                 title=title,
                 markdown_content=content,
