@@ -161,12 +161,12 @@ class MainWindow(QMainWindow):
 
         self.preview_stats = QLabel("选择文件后自动生成预览")
         self.preview_stats.setObjectName("previewStats")
-        self.preview_stats.setWordWrap(True)
+        self.preview_stats.setMaximumHeight(28)
         preview_layout.addWidget(self.preview_stats)
 
         self.image_status_list = QListWidget()
         self.image_status_list.setObjectName("imageStatus")
-        self.image_status_list.setMaximumHeight(120)
+        self.image_status_list.setMaximumHeight(100)
         self.image_status_list.setVisible(False)
         preview_layout.addWidget(self.image_status_list)
 
@@ -449,35 +449,34 @@ class MainWindow(QMainWindow):
             self.btn_export.setEnabled(False)
             self.btn_copy.setEnabled(False)
 
-            heading_lines = "\n".join(
-                f"  {'  ' * (lvl-1)}H{lvl} {h}"
-                for lvl, h in result.headings[:20]
-            )
-            img_names = "\n".join(
-                f"  📷 {Path(p).name}" for p in result.images[:10]
-            )
-            if len(result.images) > 10:
-                img_names += f"\n  ...及其他 {len(result.images) - 10} 张"
             self.preview_stats.setText(
-                f"📊 段落: {result.paragraph_count}  "
-                f"代码块: {result.code_block_count}  "
-                f"图片: {len(result.images)}  "
-                f"表格: {result.table_count}\n\n"
-                f"标题结构:\n{heading_lines if heading_lines else '  (无标题)'}"
-                f"\n\n图片列表:\n{img_names if img_names else '  (无)'}"
+                f"📊 {result.paragraph_count}段 · {result.code_block_count}代码块"
+                f" · {len(result.images)}图 · {result.table_count}表"
             )
+            tooltip_lines = ["📊 解析详情"]
+            tooltip_lines.append(f"段落: {result.paragraph_count}")
+            tooltip_lines.append(f"代码块: {result.code_block_count}")
+            tooltip_lines.append(f"图片: {len(result.images)}")
+            tooltip_lines.append(f"表格: {result.table_count}")
+            if result.headings:
+                tooltip_lines.append("")
+                tooltip_lines.append("标题结构:")
+                for lvl, h in result.headings[:15]:
+                    tooltip_lines.append(f"  {'  ' * (lvl-1)}H{lvl} {h}")
+                if len(result.headings) > 15:
+                    tooltip_lines.append(f"  ...及其他 {len(result.headings) - 15} 个")
+            if result.images:
+                tooltip_lines.append("")
+                tooltip_lines.append("图片列表:")
+                for p in result.images[:10]:
+                    tooltip_lines.append(f"  📷 {Path(p).name}")
+                if len(result.images) > 10:
+                    tooltip_lines.append(f"  ...及其他 {len(result.images) - 10} 张")
+            self.preview_stats.setToolTip("\n".join(tooltip_lines))
             self.preview_render.setHtml(mistune.html(content))
 
             self.image_status_list.clear()
-            if result.images:
-                self.image_status_list.setVisible(True)
-                for img_path in result.images:
-                    name = Path(img_path).name
-                    item = QListWidgetItem(f"⏳ {name}")
-                    item.setData(Qt.UserRole, img_path)
-                    self.image_status_list.addItem(item)
-            else:
-                self.image_status_list.setVisible(False)
+            self.image_status_list.setVisible(False)
 
     def _toggle_dark(self, checked):
         if checked:
@@ -1316,7 +1315,9 @@ class MainWindow(QMainWindow):
         self._custom_tone_text = self.settings.get("ai_tone_custom", "")
         idx = self.tone_combo.findText(saved_tone)
         if idx >= 0:
+            self.tone_combo.blockSignals(True)
             self.tone_combo.setCurrentIndex(idx)
+            self.tone_combo.blockSignals(False)
         if api_key:
             config = RewriteConfig(
                 api_key=api_key, api_base=api_base, model=model,
@@ -1490,6 +1491,12 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
             local_images = [p for p in self.current_result.images if Path(p).exists()]
             if local_images:
+                self.image_status_list.clear()
+                self.image_status_list.setVisible(True)
+                for local_path in local_images:
+                    item = QListWidgetItem(f"⏳ {Path(local_path).name}")
+                    item.setData(Qt.UserRole, local_path)
+                    self.image_status_list.addItem(item)
                 from image_uploader import upload_image as _upload_one
                 mapping = {}
                 for local_path in local_images:
@@ -1510,6 +1517,7 @@ class MainWindow(QMainWindow):
                 self.log(f"🖼️ 图片上传完成 ({len(mapping)}/{len(local_images)} 张)")
             else:
                 self.log("🖼️ 无本地图片需上传，跳过")
+            self.image_status_list.setVisible(False)
 
         system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
         self.ai_rewriter.config.system_prompt = system_prompt
@@ -1545,6 +1553,12 @@ class MainWindow(QMainWindow):
             local_images = [p for p in self.current_result.images if Path(p).exists()]
             local_in_sel = [p for p in local_images if p in selected]
             if local_in_sel:
+                self.image_status_list.clear()
+                self.image_status_list.setVisible(True)
+                for local_path in local_in_sel:
+                    item = QListWidgetItem(f"⏳ {Path(local_path).name}")
+                    item.setData(Qt.UserRole, local_path)
+                    self.image_status_list.addItem(item)
                 self.log(f"🖼️ 上传选中区域内的图片 ({len(local_in_sel)} 张)...")
                 self.status_label.setText("正在上传图片...")
                 QApplication.processEvents()
@@ -1552,15 +1566,20 @@ class MainWindow(QMainWindow):
                 mapping = {}
                 for local_path in local_in_sel:
                     try:
+                        self._set_image_status(local_path, "⏳ 上传中...")
+                        QApplication.processEvents()
                         remote_url = _upload_one(local_path)
                         mapping[local_path] = remote_url
+                        self._set_image_status(local_path, f"✅ {Path(local_path).name}")
                         self.log(f"  ✅ {Path(local_path).name} → {remote_url}")
                     except Exception as e:
+                        self._set_image_status(local_path, f"❌ {Path(local_path).name}")
                         self.log(f"  ❌ {Path(local_path).name}: {e}")
                 for local_path, remote_url in mapping.items():
                     rewrite_content = rewrite_content.replace(
                         f"({local_path})", f"({remote_url})"
                     )
+                self.image_status_list.setVisible(False)
 
         system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
         self.ai_rewriter.config.system_prompt = system_prompt
