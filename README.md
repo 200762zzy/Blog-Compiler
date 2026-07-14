@@ -85,6 +85,15 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 - 复制到剪贴板，直接粘贴到 CSDN 编辑器
 - CSDN Markdown 方言自动适配（表格格式、代码块标识）
 
+### 🚀 v2.0.0 新特性
+
+- **CSDN API 凭据可配置** — `CA_KEY`/`CA_SECRET` 移至配置文件，不再硬编码于源码，用户可自定义覆盖
+- **选中区域改写** — 支持仅改写选中文本，保留上下文不变
+- **自定义系统提示词** — 可在设置中编写自定义 AI 提示词，自由控制改写风格
+- **草稿历史** — 每次改写自动保存草稿，支持版本回溯
+- **预览即改写后内容** — 预览 tab 直接展示改写完成的 HTML，无需切换
+- **启动速度优化** — 延迟加载 QtWebEngine 等重型模块，首次启动更快
+
 ### 🎨 界面
 
 - 暗色模式
@@ -100,7 +109,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 下载即用
 
-[![Download](https://img.shields.io/badge/Download-v1.3.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
+[![Download](https://img.shields.io/badge/Download-v2.0.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
 
 1. 下载 `BlogCompiler.exe`
 2. 双击运行（无需安装）
@@ -146,7 +155,7 @@ Blog-Compiler/
 
 ```bash
 python build.py
-# 输出: dist/BlogCompiler.exe (~214 MB, 含 QtWebEngine)
+# 输出: dist/BlogCompiler.exe (~233 MB, 含 QtWebEngine)
 ```
 
 ---

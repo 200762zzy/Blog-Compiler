@@ -1611,7 +1611,9 @@ class MainWindow(QMainWindow):
         self.rewritten_content = new_full
         self.rewritten_view.setText(rewritten)
         self.content_tabs.setTabEnabled(2, True)
-        self.content_tabs.setCurrentIndex(2)
+        self.preview_stats.setText("📝 改写后预览")
+        self.preview_render.setHtml(mistune.html(new_full))
+        self.content_tabs.setCurrentIndex(1)
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
@@ -1631,7 +1633,10 @@ class MainWindow(QMainWindow):
         self.rewritten_content = result
         self.rewritten_view.setText(result)
         self.content_tabs.setTabEnabled(2, True)
-        self.content_tabs.setCurrentIndex(2)
+
+        self.preview_stats.setText("📝 改写后预览")
+        self.preview_render.setHtml(mistune.html(result))
+        self.content_tabs.setCurrentIndex(1)
 
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
@@ -1973,6 +1978,8 @@ class MainWindow(QMainWindow):
                 title=title,
                 markdown_content=content,
                 cookies=self.csdn_cookies,
+                ca_key=self.settings.get("ca_key"),
+                ca_secret=self.settings.get("ca_secret"),
                 is_new=True,
                 tags=tags,
                 categories=categories,

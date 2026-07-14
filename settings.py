@@ -8,6 +8,9 @@ CONFIG_DIR = Path.home() / ".blog-compiler"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 KEY_FILE = CONFIG_DIR / ".key"
 
+DEFAULT_CA_KEY = "203803574"
+DEFAULT_CA_SECRET = "9znpamsyl2c7cdrr9sas0le9vbc3r6ba"
+
 
 def _get_cipher() -> Fernet:
     if not KEY_FILE.exists():
@@ -23,6 +26,18 @@ class Settings:
     def __init__(self):
         self.data = {}
         self.load()
+        self._ensure_defaults()
+
+    def _ensure_defaults(self):
+        changed = False
+        if "ca_key" not in self.data:
+            self.data["ca_key"] = DEFAULT_CA_KEY
+            changed = True
+        if "ca_secret" not in self.data:
+            self.data["ca_secret"] = DEFAULT_CA_SECRET
+            changed = True
+        if changed:
+            self.save()
 
     def load(self):
         if CONFIG_FILE.exists():

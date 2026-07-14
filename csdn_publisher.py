@@ -8,8 +8,6 @@ import httpx
 import mistune
 
 
-CA_KEY = "203803574"
-CA_SECRET = "9znpamsyl2c7cdrr9sas0le9vbc3r6ba"
 SAVE_URL = "https://bizapi.csdn.net/blog-console-api/v3/mdeditor/saveArticle"
 
 _USER_AGENT = (
@@ -23,14 +21,14 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
-def _build_sign(method: str, path: str, nonce: str) -> str:
+def _build_sign(method: str, path: str, nonce: str, ca_key: str, ca_secret: str) -> str:
     to_enc = (
         f"{method}\n*/*\n\napplication/json\n\n"
-        f"x-ca-key:{CA_KEY}\n"
+        f"x-ca-key:{ca_key}\n"
         f"x-ca-nonce:{nonce}\n"
         f"{path}"
     )
-    raw = hmac.new(CA_SECRET.encode(), to_enc.encode(), hashlib.sha256).digest()
+    raw = hmac.new(ca_secret.encode(), to_enc.encode(), hashlib.sha256).digest()
     return b64encode(raw).decode()
 
 
@@ -38,6 +36,8 @@ def publish(
     title: str,
     markdown_content: str,
     cookies: dict,
+    ca_key: str,
+    ca_secret: str,
     is_new: bool = True,
     tags: str = "",
     categories: str = "",
@@ -49,10 +49,10 @@ def publish(
     parsed = urlparse(SAVE_URL)
     path = parsed.path + ("?" + parsed.query if parsed.query else "")
 
-    sign = _build_sign("POST", path, nonce)
+    sign = _build_sign("POST", path, nonce, ca_key, ca_secret)
 
     headers = {
-        "x-ca-key": CA_KEY,
+        "x-ca-key": ca_key,
         "x-ca-nonce": nonce,
         "x-ca-signature": sign,
         "x-ca-signature-headers": "x-ca-key,x-ca-nonce",
