@@ -23,6 +23,7 @@ from exporter import Exporter
 from image_uploader import upload_images
 from icons import get as get_icon
 from version import VERSION
+from publishers import init_publishers, get_publishers, get_publisher
 
 
 class UpdateChecker(QThread):
@@ -94,9 +95,8 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._restore_ai_settings()
         self._custom_tone_text = ""
-        self.csdn_cookies = None
-        self._restore_csdn_settings()
-        self._update_csdn_status()
+        init_publishers(self.settings)
+        self._update_all_publisher_status()
         self._check_for_updates()
 
         ico = QIcon("icon.ico")
@@ -267,24 +267,32 @@ class MainWindow(QMainWindow):
         cl_img.addWidget(self.rb_img_upload)
         cl_img.addWidget(self.rb_img_keep)
 
-        # Card 3: CSDN 发布
-        card_csdn, cl_csdn = _make_card("CSDN 发布")
-        self.csdn_status = QLabel("未登录")
-        self.csdn_status.setObjectName("csdnStatus")
-        cl_csdn.addWidget(self.csdn_status)
+        # Card 3: 多平台发布
+        card_pub, cl_pub = _make_card("多平台发布")
+        self._pub_status_labels = {}
+        self._pub_login_btns = {}
+        for p in get_publishers():
+            row = QHBoxLayout()
+            status = QLabel("❌ 未登录")
+            status.setObjectName(f"{p.name}Status")
+            self._pub_status_labels[p.name] = status
+            row.addWidget(QLabel(f"{p.name}:"))
+            row.addWidget(status)
 
-        self.btn_csdn_login = QPushButton(" 登录 CSDN")
-        self.btn_csdn_login.setIcon(get_icon("login"))
-        self.btn_csdn_login.setObjectName("secondaryBtn")
-        self.btn_csdn_login.clicked.connect(self._login_csdn)
-        cl_csdn.addWidget(self.btn_csdn_login)
+            login_btn = QPushButton("登录")
+            login_btn.setObjectName("secondaryBtn")
+            login_btn.clicked.connect(lambda checked, name=p.name: self._publisher_login(name))
+            self._pub_login_btns[p.name] = login_btn
+            row.addWidget(login_btn)
 
-        self.btn_publish = QPushButton(" 发布到 CSDN")
-        self.btn_publish.setIcon(get_icon("publish"))
-        self.btn_publish.setObjectName("primaryBtn")
-        self.btn_publish.clicked.connect(self._publish_to_csdn)
-        self.btn_publish.setEnabled(False)
-        cl_csdn.addWidget(self.btn_publish)
+            cl_pub.addLayout(row)
+
+        self.btn_multi_publish = QPushButton(" 多平台发布")
+        self.btn_multi_publish.setIcon(get_icon("publish"))
+        self.btn_multi_publish.setObjectName("primaryBtn")
+        self.btn_multi_publish.clicked.connect(self._open_publish_dialog)
+        self.btn_multi_publish.setEnabled(False)
+        cl_pub.addWidget(self.btn_multi_publish)
 
         # Card 4: 日志
         card_log, cl_log = _make_card("")
@@ -1638,7 +1646,7 @@ class MainWindow(QMainWindow):
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
-        self.btn_publish.setEnabled(True)
+        self.btn_multi_publish.setEnabled(True)
         self._save_draft(new_full)
         self.log("✅ 选中区域改写完成，已替换回原文")
 
@@ -1664,7 +1672,7 @@ class MainWindow(QMainWindow):
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
-        self.btn_publish.setEnabled(True)
+        self.btn_multi_publish.setEnabled(True)
 
         self._save_draft(result)
         self.log("✅ AI 改写完成")
@@ -1724,7 +1732,7 @@ class MainWindow(QMainWindow):
         self.content_tabs.setCurrentIndex(2)
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
-        self.btn_publish.setEnabled(True)
+        self.btn_multi_publish.setEnabled(True)
         self.log(f"📂 已恢复草稿 v{draft['v']} ({draft['ts']})")
 
     def _export_file(self):
@@ -1876,53 +1884,38 @@ class MainWindow(QMainWindow):
         }
         return base + img_rules.get(mode, img_rules["alt"])
 
-    def _restore_csdn_settings(self):
-        raw = self.settings.get("csdn_cookies")
-        if raw:
-            try:
-                import json
-                self.csdn_cookies = json.loads(raw)
-                self.log("🔑 CSDN Cookie 已加载")
-            except Exception:
-                self.csdn_cookies = None
+    def _update_all_publisher_status(self):
+        for p in get_publishers():
+            label = self._pub_status_labels.get(p.name)
+            btn = self._pub_login_btns.get(p.name)
+            if label:
+                label.setText("✅ 已登录" if p.is_logged_in() else "❌ 未登录")
+            if btn:
+                btn.setText("切换账号" if p.is_logged_in() else "登录")
 
-    def _update_csdn_status(self):
-        if self.csdn_cookies:
-            self.csdn_status.setText("✅ 已登录")
-            self.btn_csdn_login.setText("切换账号")
-        else:
-            self.csdn_status.setText("❌ 未登录")
-            self.btn_csdn_login.setText("登录 CSDN")
+    def _publisher_login(self, name: str):
+        p = get_publisher(name)
+        if not p:
+            return
+        if p.is_logged_in():
+            reply = QMessageBox.question(
+                self, f"{name} 登录",
+                f"已登录 {name}，是否退出并重新登录？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            p.logout()
+        success = p.login(self)
+        self._update_all_publisher_status()
+        if success:
+            self.log(f"🔑 {name} 登录成功")
 
-    def _login_csdn(self):
-        from login_window import CsdnLoginWindow
-        login_dlg = CsdnLoginWindow(self)
-        login_dlg.login_successful.connect(self._on_csdn_login)
-        login_dlg.exec()
-
-    def _on_csdn_login(self, cookies):
-        self.csdn_cookies = cookies
-        import json
-        self.settings.set("csdn_cookies", json.dumps(cookies))
-        self._update_csdn_status()
-        self.log("🔑 CSDN 登录成功")
-
-    def _publish_to_csdn(self):
+    def _open_publish_dialog(self):
         content = self.rewritten_view.toPlainText() or self.current_content
         if not content:
             QMessageBox.information(self, "提示", "没有可发布的内容")
             return
-
-        if not self.csdn_cookies:
-            reply = QMessageBox.question(
-                self, "未登录",
-                "尚未登录 CSDN，是否现在登录？",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self._login_csdn()
-            if not self.csdn_cookies:
-                return
 
         filepath = (
             self.file_paths[self.file_list.currentRow()]
@@ -1936,110 +1929,10 @@ class MainWindow(QMainWindow):
             Path(filepath).stem if filepath else "未命名文章"
         )
 
-        content = Exporter.adapt_csdn_format(content)
-        from PySide6.QtWidgets import (
-            QLineEdit, QComboBox, QCheckBox,
-            QDialogButtonBox, QFormLayout,
-        )
+        dlg = PublishDialog(self, content, default_title)
+        dlg.exec()
 
-        pub_dialog = QDialog(self)
-        pub_dialog.setWindowTitle("CSDN 发布设置")
-        pub_layout = QFormLayout(pub_dialog)
-
-        pub_title = QLineEdit(default_title)
-        pub_layout.addRow("标题:", pub_title)
-
-        pub_tags = QLineEdit("技术")
-        pub_tags.setPlaceholderText("多个标签用逗号分隔")
-        pub_layout.addRow("标签:", pub_tags)
-
-        pub_categories = QLineEdit()
-        pub_categories.setPlaceholderText("可选")
-        pub_layout.addRow("分类:", pub_categories)
-
-        pub_type = QComboBox()
-        pub_type.addItems(["原创", "转载", "翻译"])
-        pub_layout.addRow("类型:", pub_type)
-
-        pub_base64 = QCheckBox("将图片转为 base64 嵌入（体积大但 100% 可靠）")
-        pub_layout.addRow(pub_base64)
-
-        pub_draft = QCheckBox("保存为草稿（不发布，不计入每日限制）")
-        pub_draft.toggled.connect(
-            lambda checked: pub_buttons.button(QDialogButtonBox.Ok).setText(
-                "保存草稿" if checked else "发布"
-            )
-        )
-        pub_layout.addRow(pub_draft)
-
-        pub_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        pub_buttons.button(QDialogButtonBox.Ok).setText("发布")
-        pub_buttons.accepted.connect(pub_dialog.accept)
-        pub_buttons.rejected.connect(pub_dialog.reject)
-        pub_layout.addRow(pub_buttons)
-
-        if pub_dialog.exec() != QDialog.Accepted:
-            return
-
-        title = pub_title.text().strip() or default_title
-        tags = pub_tags.text().strip() or "技术"
-        categories = pub_categories.text().strip()
-        pub_type_str = pub_type.currentText()
-        type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
-        use_base64 = pub_base64.isChecked()
-        is_draft = pub_draft.isChecked()
-
-        if use_base64:
-            self.log("🖼️ 正在将图片转为 base64...")
-            self.status_label.setText("正在嵌入图片...")
-            QApplication.processEvents()
-
-        self.log(f"📤 正在发布到 CSDN: {title}")
-        self.status_label.setText("发布中...")
-        QApplication.processEvents()
-
-        try:
-            if use_base64:
-                content = self._embed_images_base64(content)
-            from csdn_publisher import publish as csdn_publish
-            result = csdn_publish(
-                title=title,
-                markdown_content=content,
-                cookies=self.csdn_cookies,
-                ca_key=self.settings.get("ca_key"),
-                ca_secret=self.settings.get("ca_secret"),
-                is_new=True,
-                tags=tags,
-                categories=categories,
-                article_type=type_map.get(pub_type_str, "original"),
-                draft=is_draft,
-            )
-            url = result.get("data", {}).get("url", "")
-            msg = "✅ 发布成功！"
-            if url:
-                msg += f"\n文章链接: {url}"
-            QMessageBox.information(self, "发布成功", msg)
-            self.log(f"✅ CSDN 发布成功: {url or ''}")
-        except PermissionError as e:
-            self.log(f"❌ 登录过期: {e}")
-            self.csdn_cookies = None
-            self.settings.set("csdn_cookies", "")
-            self._update_csdn_status()
-            reply = QMessageBox.question(
-                self, "登录过期",
-                f"{e}\n\n是否重新登录？",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self._login_csdn()
-        except Exception as e:
-            self.log(f"❌ 发布失败: {e}")
-            QMessageBox.critical(self, "发布失败", str(e))
-        finally:
-            self.status_label.setText("就绪")
-
-    @staticmethod
-    def _embed_images_base64(markdown: str) -> str:
+    def _embed_images_base64(self, markdown: str) -> str:
         import base64 as _b64
         import re as _re
         img_re = _re.compile(r'!\[(.*?)\]\((.+?)\)')
@@ -2071,3 +1964,178 @@ class MainWindow(QMainWindow):
                 return m.group(0)
 
         return img_re.sub(_replace, markdown)
+
+
+class PublishDialog(QDialog):
+    def __init__(self, parent, content: str, default_title: str):
+        super().__init__(parent)
+        self.parent = parent
+        self.content = content
+        self.setWindowTitle("多平台发布管理器")
+        self.resize(680, 560)
+
+        layout = QVBoxLayout(self)
+
+        top_layout = QHBoxLayout()
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        left_layout.addWidget(QLabel("选择发布平台:"))
+        self._platform_checks = {}
+        for p in get_publishers():
+            cb = QCheckBox(f"{p.name}")
+            cb.setChecked(p.is_logged_in())
+            cb.setEnabled(p.is_logged_in())
+            left_layout.addWidget(cb)
+            self._platform_checks[p.name] = cb
+
+        self._login_hint = QLabel("")
+        self._login_hint.setWordWrap(True)
+        left_layout.addWidget(self._login_hint)
+        left_layout.addStretch()
+
+        right_widget = QWidget()
+        right_layout = QFormLayout(right_widget)
+
+        self.title_edit = QLineEdit(default_title)
+        right_layout.addRow("标题:", self.title_edit)
+
+        self.tags_edit = QLineEdit("技术")
+        self.tags_edit.setPlaceholderText("多个标签用逗号分隔")
+        right_layout.addRow("标签:", self.tags_edit)
+
+        self.categories_edit = QLineEdit()
+        self.categories_edit.setPlaceholderText("可选")
+        right_layout.addRow("分类:", self.categories_edit)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["原创", "转载", "翻译"])
+        right_layout.addRow("类型:", self.type_combo)
+
+        self.base64_check = QCheckBox("将图片转为 base64 嵌入（体积大但 100% 可靠）")
+        right_layout.addRow(self.base64_check)
+
+        self.draft_check = QCheckBox("保存为草稿（不发布）")
+        right_layout.addRow(self.draft_check)
+
+        self.parallel_check = QCheckBox("并行发布（串行默认）")
+        right_layout.addRow(self.parallel_check)
+
+        top_layout.addWidget(left_widget, 1)
+        top_layout.addWidget(right_widget, 2)
+        layout.addLayout(top_layout)
+
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(150)
+        layout.addWidget(QLabel("发布日志:"))
+        layout.addWidget(self.log_view)
+
+        btn_layout = QHBoxLayout()
+        self.publish_btn = QPushButton("发布")
+        self.publish_btn.setObjectName("primaryBtn")
+        self.publish_btn.clicked.connect(self._do_publish)
+        self.close_btn = QPushButton("关闭")
+        self.close_btn.clicked.connect(self.close)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.publish_btn)
+        btn_layout.addWidget(self.close_btn)
+        layout.addLayout(btn_layout)
+
+    def _log(self, msg: str):
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_view.append(f"[{ts}] {msg}")
+        QApplication.processEvents()
+
+    def _do_publish(self):
+        title = self.title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请输入标题")
+            return
+
+        content = self.content
+        tags = self.tags_edit.text().strip()
+        categories = self.categories_edit.text().strip()
+        type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
+        article_type = type_map.get(self.type_combo.currentText(), "original")
+        is_draft = self.draft_check.isChecked()
+        use_base64 = self.base64_check.isChecked()
+
+        if use_base64:
+            self._log("🖼️ 正在将图片转为 base64...")
+            QApplication.processEvents()
+            content = self.parent._embed_images_base64(content)
+
+        checked_platforms = [
+            name for name, cb in self._platform_checks.items()
+            if cb.isChecked()
+        ]
+        if not checked_platforms:
+            QMessageBox.warning(self, "提示", "请至少选择一个已登录的平台")
+            return
+
+        parallel = self.parallel_check.isChecked()
+        success_count = 0
+        fail_count = 0
+
+        self.publish_btn.setEnabled(False)
+
+        if parallel:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            futures = {}
+            with ThreadPoolExecutor(max_workers=len(checked_platforms)) as executor:
+                for name in checked_platforms:
+                    p = get_publisher(name)
+                    adapted = Exporter.adapt_for(name, content)
+                    self._log(f"📤 正在发布到 {name}...")
+                    future = executor.submit(
+                        p.publish, title=title, content=adapted,
+                        tags=tags, categories=categories,
+                        article_type=article_type, draft=is_draft,
+                    )
+                    futures[future] = name
+
+                for future in as_completed(futures):
+                    name = futures[future]
+                    try:
+                        result = future.result()
+                        if result.success:
+                            success_count += 1
+                            self._log(f"✅ {name} 发布成功: {result.url}")
+                        else:
+                            fail_count += 1
+                            self._log(f"❌ {name} 发布失败: {result.error}")
+                    except Exception as e:
+                        fail_count += 1
+                        self._log(f"❌ {name} 异常: {e}")
+        else:
+            for name in checked_platforms:
+                p = get_publisher(name)
+                adapted = Exporter.adapt_for(name, content)
+                self._log(f"📤 正在发布到 {name}...")
+                QApplication.processEvents()
+                try:
+                    result = p.publish(
+                        title=title, content=adapted,
+                        tags=tags, categories=categories,
+                        article_type=article_type, draft=is_draft,
+                    )
+                    if result.success:
+                        success_count += 1
+                        self._log(f"✅ {name} 发布成功: {result.url}")
+                    else:
+                        fail_count += 1
+                        self._log(f"❌ {name} 发布失败: {result.error}")
+                except Exception as e:
+                    fail_count += 1
+                    self._log(f"❌ {name} 异常: {e}")
+                QApplication.processEvents()
+
+        self.publish_btn.setEnabled(True)
+        summary = f"✅ {success_count} 成功，❌ {fail_count} 失败"
+        QMessageBox.information(self, "发布完成", summary)
+        self._log(f"📊 发布完成: {summary}")
+        if success_count > 0:
+            self.parent.status_label.setText("就绪")

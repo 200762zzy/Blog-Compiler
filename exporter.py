@@ -4,6 +4,24 @@ from image_handler import ImageHandler
 
 
 class Exporter:
+    PLATFORM_ADAPTERS = {
+        "CSDN": lambda c: Exporter.adapt_csdn_format(c),
+        "掘金": lambda c: Exporter._adapt_juejin(c),
+        "博客园": lambda c: c,
+    }
+
+    @staticmethod
+    def adapt_for(platform: str, content: str) -> str:
+        adapter = Exporter.PLATFORM_ADAPTERS.get(platform)
+        if adapter:
+            return adapter(content)
+        return content
+
+    @staticmethod
+    def _adapt_juejin(content: str) -> str:
+        content = Exporter._ensure_codeblock_lang(content)
+        content = Exporter._handle_image_dimensions(content)
+        return content
     @staticmethod
     def to_file(content: str, filepath: str, overwrite_callback=None):
         path = Path(filepath)

@@ -30,6 +30,8 @@ def main():
         "--hidden-import", "PySide6.QtWebEngineWidgets",
         "--hidden-import", "PySide6.QtWebEngineCore",
         "--hidden-import", "PySide6.QtWebChannel",
+        "--hidden-import", "publishers",
+        "--collect-submodules", "publishers",
         str(repo_root / "main.py"),
     ]
 

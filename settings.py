@@ -36,6 +36,10 @@ class Settings:
         if "ca_secret" not in self.data:
             self.data["ca_secret"] = DEFAULT_CA_SECRET
             changed = True
+        for key in ("juejin_cookies", "cnblogs_username", "cnblogs_api_key", "cnblogs_blog_id"):
+            if key not in self.data:
+                self.data[key] = ""
+                changed = True
         if changed:
             self.save()
 
