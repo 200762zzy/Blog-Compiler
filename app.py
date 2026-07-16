@@ -92,10 +92,10 @@ class MainWindow(QMainWindow):
         self.current_result = None
         self.drafts = []
         self._rewrite_gen = 0
+        init_publishers(self.settings)
         self._setup_ui()
         self._restore_ai_settings()
         self._custom_tone_text = ""
-        init_publishers(self.settings)
         self._update_all_publisher_status()
         self._check_for_updates()
 
@@ -1935,7 +1935,7 @@ class MainWindow(QMainWindow):
     def _embed_images_base64(self, markdown: str) -> str:
         import base64 as _b64
         import re as _re
-        img_re = _re.compile(r'!\[(.*?)\]\((.+?)\)')
+        img_re = _re.compile(r'!\[(.*?)\]\((.+?)(?:\s+"[^"]*")?\)')
 
         def _replace(m):
             alt = m.group(1)

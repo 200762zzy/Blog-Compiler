@@ -72,6 +72,8 @@ class Settings:
             cipher = _get_cipher()
             return cipher.decrypt(encrypted.encode()).decode()
         except Exception:
+            import logging
+            logging.getLogger(__name__).exception(f"解密失败: key={key}")
             return None
 
     def set_encrypted(self, key: str, value: str):

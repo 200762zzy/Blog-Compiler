@@ -23,7 +23,13 @@ class PlatformLoginWindow(QDialog):
         self._progress_label = QLabel("正在加载登录页面...")
         layout.addWidget(self._progress_label)
 
-        from PySide6.QtWebEngineWidgets import QWebEngineView
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "错误", "缺少 QtWebEngine 模块，无法使用扫码登录。\n请安装: pip install PySide6-QtWebEngine")
+            self.reject()
+            return
         self.browser = QWebEngineView()
         layout.addWidget(self.browser)
 
@@ -31,7 +37,13 @@ class PlatformLoginWindow(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
         layout.addWidget(self.btn_cancel)
 
-        from PySide6.QtWebEngineCore import QWebEngineProfile
+        try:
+            from PySide6.QtWebEngineCore import QWebEngineProfile
+        except ImportError:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "错误", "缺少 QtWebEngineCore 模块")
+            self.reject()
+            return
         profile = QWebEngineProfile.defaultProfile()
         cookie_store = profile.cookieStore()
         cookie_store.cookieAdded.connect(self._on_cookie_added)

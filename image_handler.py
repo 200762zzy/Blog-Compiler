@@ -9,8 +9,8 @@ import re
 from typing import List
 
 
-IMAGE_PATTERN = r'!\[(.*?)\]\((.+?)\)'
-"""Captures alt text (group 1) and URL/path (group 2) from Markdown images."""
+IMAGE_PATTERN = r'!\[(.*?)\]\((.+?)(?:\s+"[^"]*")?\)'
+"""Captures alt text (group 1) and URL/path (group 2) from Markdown images, optional title attribute stripped."""
 
 
 class ImageHandler:
