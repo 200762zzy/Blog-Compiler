@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QMessag
 class PlatformLoginWindow(QDialog):
     login_successful = Signal(dict)
 
-    def __init__(self, parent, login_url: str, domain_filter: str, window_title: str = "登录"):
+    def __init__(self, parent, login_url: str, domain_filter: str, window_title: str = "登录", success_check=None):
         super().__init__(parent)
         self.setWindowTitle(window_title)
         self.resize(500, 700)
@@ -13,6 +13,7 @@ class PlatformLoginWindow(QDialog):
         self._login_detected = False
         self._domain_filter = domain_filter
         self._login_url = login_url
+        self._success_check = success_check
 
         layout = QVBoxLayout(self)
 
@@ -33,6 +34,11 @@ class PlatformLoginWindow(QDialog):
         self.browser = QWebEngineView()
         layout.addWidget(self.browser)
 
+        self.btn_confirm = QPushButton("已完成扫码，确认登录")
+        self.btn_confirm.setEnabled(False)
+        self.btn_confirm.clicked.connect(self._on_manual_confirm)
+        layout.addWidget(self.btn_confirm)
+
         self.btn_cancel = QPushButton("取消")
         self.btn_cancel.clicked.connect(self.reject)
         layout.addWidget(self.btn_cancel)
@@ -51,7 +57,13 @@ class PlatformLoginWindow(QDialog):
         self.browser.urlChanged.connect(self._on_url_changed)
         self.browser.load(QUrl(self._login_url))
 
+        QTimer.singleShot(3000, lambda: self._enable_confirm())
         QTimer.singleShot(120000, lambda: self._check_stuck())
+
+    def _enable_confirm(self):
+        if not self._login_detected:
+            self.btn_confirm.setEnabled(True)
+            self._progress_label.setText("请扫描二维码完成登录")
 
     def _on_cookie_added(self, cookie):
         name = cookie.name().data().decode(errors="replace")
@@ -69,7 +81,12 @@ class PlatformLoginWindow(QDialog):
             QTimer.singleShot(2000, self._finalize_login)
 
     def _is_login_successful(self, url_str: str) -> bool:
-        return False
+        if self._success_check:
+            return self._success_check(url_str)
+        return (
+            "login" not in url_str.lower()
+            and self._domain_filter in url_str
+        )
 
     def _finalize_login(self):
         domain = self._domain_filter
@@ -92,6 +109,13 @@ class PlatformLoginWindow(QDialog):
             if "login" in current_url:
                 self._progress_label.setText("请扫描二维码完成登录...")
 
+    def _on_manual_confirm(self):
+        if self._login_detected:
+            return
+        self._login_detected = True
+        self._progress_label.setText("登录确认，正在获取 Cookie...")
+        QTimer.singleShot(2000, self._finalize_login)
+
 
 class CsdnLoginWindow(PlatformLoginWindow):
     def __init__(self, parent=None):
@@ -100,11 +124,9 @@ class CsdnLoginWindow(PlatformLoginWindow):
             login_url="https://passport.csdn.net/login",
             domain_filter="csdn.net",
             window_title="登录 CSDN",
-        )
-
-    def _is_login_successful(self, url_str: str) -> bool:
-        return (
-            "passport.csdn.net" not in url_str
-            and "login" not in url_str
-            and url_str.startswith("https://www.csdn.net/")
+            success_check=lambda url: (
+                "passport.csdn.net" not in url
+                and "login" not in url
+                and url.startswith("https://www.csdn.net/")
+            ),
         )

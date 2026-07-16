@@ -1,4 +1,6 @@
 import json
+import mimetypes
+from pathlib import Path
 
 import httpx
 
@@ -72,9 +74,105 @@ class JuejinPublisher(BasePublisher):
         self._cookies = None
         self._save()
 
+    def _upload_image(self, local_path: str) -> str:
+        cookie_str = _build_cookie_header(self._cookies)
+        headers = {
+            "user-agent": _USER_AGENT,
+            "referer": "https://juejin.cn/",
+            "origin": "https://juejin.cn",
+            "cookie": cookie_str,
+        }
+
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                "https://api.juejin.cn/imagex/gen_token",
+                params={"client": "web"},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            token = data.get("data") or data.get("token", "")
+        if not token:
+            raise Exception("获取上传 token 失败")
+
+        with httpx.Client(timeout=15.0) as client:
+            apply_resp = client.get(
+                "https://imagex.bytedanceapi.com/",
+                params={
+                    "Action": "ApplyImageUpload",
+                    "Version": "2018-08-01",
+                    "ServiceId": "k3u1fbpfcp",
+                    "s": token,
+                },
+                headers={"user-agent": _USER_AGENT},
+            )
+            apply_resp.raise_for_status()
+            apply_data = apply_resp.json()
+
+        upload_addr = apply_data.get("Result", {}).get("UploadAddress", {})
+        store_uri = upload_addr.get("StoreUri", "")
+        upload_hosts = upload_addr.get("UploadHosts", [])
+        session_key = upload_addr.get("SessionKey", "")
+        if not store_uri or not upload_hosts:
+            raise Exception("获取上传地址失败")
+
+        upload_host = upload_hosts[0]
+        file_bytes = Path(local_path).read_bytes()
+        mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+
+        with httpx.Client(timeout=60.0) as client:
+            put_resp = client.put(
+                f"https://{upload_host}/{store_uri}",
+                content=file_bytes,
+                headers={"Content-Type": mime},
+            )
+            put_resp.raise_for_status()
+
+        with httpx.Client(timeout=15.0) as client:
+            commit_resp = client.post(
+                f"https://{upload_host}/",
+                params={
+                    "Action": "CommitImageUpload",
+                    "Version": "2018-08-01",
+                    "ServiceId": "k3u1fbpfcp",
+                },
+                json={"SessionKey": session_key},
+                headers={"Content-Type": "application/json"},
+            )
+            commit_resp.raise_for_status()
+            commit_data = commit_resp.json()
+
+        results = commit_data.get("Result", {}).get("Results", [])
+        if not results:
+            raise Exception("提交上传后未返回结果")
+
+        return results[0].get("ImageUrl", "") or ""
+
+    def _handle_images(self, content: str) -> str:
+        from image_handler import ImageHandler
+        images = ImageHandler.extract_images(content)
+        local_images = [p for p in images if Path(p).exists()]
+        if not local_images:
+            return content
+
+        mapping = {}
+        for path in local_images:
+            try:
+                url = self._upload_image(path)
+                mapping[path] = url
+            except Exception as e:
+                continue
+
+        for local_path, remote_url in mapping.items():
+            content = content.replace(f"({local_path})", f"({remote_url})")
+            content = content.replace(f'"{local_path}"', f'"{remote_url}"')
+        return content
+
     def publish(self, title: str, content: str, **kwargs) -> PublishResult:
         if not self._cookies:
             return PublishResult(False, self.name, error="未登录掘金")
+
+        content = self._handle_images(content)
 
         category_id = kwargs.get("category_id", _DEFAULT_CATEGORY_ID)
         tag_ids = kwargs.get("tag_ids", _DEFAULT_TAG_IDS)

@@ -82,6 +82,31 @@ class RewriteWorker(QThread):
                 self.error.emit(str(e))
 
 
+class ImageUploadWorker(QThread):
+    image_status = Signal(str, str)
+    finished = Signal(dict)
+
+    def __init__(self, local_images):
+        super().__init__()
+        self.local_images = local_images
+
+    def run(self):
+        from image_uploader import upload_image as _upload_one
+        from pathlib import Path
+        mapping = {}
+        for path in self.local_images:
+            if self.isInterruptionRequested():
+                break
+            try:
+                self.image_status.emit(path, "⏳ 上传中...")
+                url = _upload_one(path)
+                mapping[path] = url
+                self.image_status.emit(path, f"✅ {Path(path).name}")
+            except Exception as e:
+                self.image_status.emit(path, f"❌ {Path(path).name}: {e}")
+        self.finished.emit(mapping)  # incomplete mapping is fine
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1501,6 +1526,8 @@ class MainWindow(QMainWindow):
         if mode == "upload" and self.current_result:
             self.log("🖼️ 开始上传图片到 scdn.io...")
             self.status_label.setText("正在上传图片...")
+            self.btn_ai.setText("取消上传")
+            self.btn_ai.setEnabled(True)
             QApplication.processEvents()
             local_images = [p for p in self.current_result.images if Path(p).exists()]
             if local_images:
@@ -1510,28 +1537,33 @@ class MainWindow(QMainWindow):
                     item = QListWidgetItem(f"⏳ {Path(local_path).name}")
                     item.setData(Qt.UserRole, local_path)
                     self.image_status_list.addItem(item)
-                from image_uploader import upload_image as _upload_one
-                mapping = {}
-                for local_path in local_images:
-                    self._set_image_status(local_path, "⏳ 上传中...")
-                    QApplication.processEvents()
-                    try:
-                        remote_url = _upload_one(local_path)
-                        mapping[local_path] = remote_url
-                        self._set_image_status(local_path, f"✅ {Path(local_path).name}")
-                        self.log(f"  ✅ {Path(local_path).name} → {remote_url}")
-                    except Exception as e:
-                        self._set_image_status(local_path, f"❌ {Path(local_path).name}")
-                        self.log(f"  ❌ {Path(local_path).name}: {e}")
-                for local_path, remote_url in mapping.items():
-                    rewrite_content = rewrite_content.replace(
-                        f"({local_path})", f"({remote_url})"
-                    )
-                self.log(f"🖼️ 图片上传完成 ({len(mapping)}/{len(local_images)} 张)")
+                self._upload_worker = ImageUploadWorker(local_images)
+                self._upload_worker.image_status.connect(self._set_image_status)
+                self._upload_worker.finished.connect(
+                    lambda m: self._on_upload_done(m, mode)
+                )
+                self._upload_worker.start()
+                return
             else:
                 self.log("🖼️ 无本地图片需上传，跳过")
             self.image_status_list.setVisible(False)
 
+        self._start_ai_rewrite(rewrite_content, mode)
+
+    def _on_upload_done(self, mapping, mode):
+        if getattr(self, "_cancel_pending", False):
+            self._cancel_pending = False
+            return
+        self.image_status_list.setVisible(False)
+        rewrite_content = self.current_content
+        for local_path, remote_url in mapping.items():
+            rewrite_content = rewrite_content.replace(
+                f"({local_path})", f"({remote_url})"
+            )
+        self.log(f"🖼️ 图片上传完成 ({len(mapping)} 张)")
+        self._start_ai_rewrite(rewrite_content, mode)
+
+    def _start_ai_rewrite(self, content, mode):
         system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
         self.ai_rewriter.config.system_prompt = system_prompt
 
@@ -1546,7 +1578,7 @@ class MainWindow(QMainWindow):
 
         self._rewrite_gen += 1
         gen = self._rewrite_gen
-        self.rewrite_worker = RewriteWorker(self.ai_rewriter, rewrite_content)
+        self.rewrite_worker = RewriteWorker(self.ai_rewriter, content)
         self.rewrite_worker.finished.connect(
             lambda result, g=gen: self._on_rewrite_finished(result, g)
         )
@@ -1582,26 +1614,34 @@ class MainWindow(QMainWindow):
                     self.image_status_list.addItem(item)
                 self.log(f"🖼️ 上传选中区域内的图片 ({len(local_in_sel)} 张)...")
                 self.status_label.setText("正在上传图片...")
+                self.btn_ai.setText("取消上传")
+                self.btn_ai.setEnabled(True)
                 QApplication.processEvents()
-                from image_uploader import upload_image as _upload_one
-                mapping = {}
-                for local_path in local_in_sel:
-                    try:
-                        self._set_image_status(local_path, "⏳ 上传中...")
-                        QApplication.processEvents()
-                        remote_url = _upload_one(local_path)
-                        mapping[local_path] = remote_url
-                        self._set_image_status(local_path, f"✅ {Path(local_path).name}")
-                        self.log(f"  ✅ {Path(local_path).name} → {remote_url}")
-                    except Exception as e:
-                        self._set_image_status(local_path, f"❌ {Path(local_path).name}")
-                        self.log(f"  ❌ {Path(local_path).name}: {e}")
-                for local_path, remote_url in mapping.items():
-                    rewrite_content = rewrite_content.replace(
-                        f"({local_path})", f"({remote_url})"
-                    )
-                self.image_status_list.setVisible(False)
+                self._upload_worker = ImageUploadWorker(local_in_sel)
+                self._upload_worker.image_status.connect(self._set_image_status)
+                self._upload_worker.finished.connect(
+                    lambda m: self._on_selection_upload_done(m, mode, full_text, start, end)
+                )
+                self._upload_worker.start()
+                return
+            self.image_status_list.setVisible(False)
 
+        self._start_selection_rewrite(rewrite_content, mode, full_text, start, end)
+
+    def _on_selection_upload_done(self, mapping, mode, full_text, start, end):
+        if getattr(self, "_cancel_pending", False):
+            self._cancel_pending = False
+            return
+        self.image_status_list.setVisible(False)
+        rewrite_content = self.current_content
+        for local_path, remote_url in mapping.items():
+            rewrite_content = rewrite_content.replace(
+                f"({local_path})", f"({remote_url})"
+            )
+        self.log(f"🖼️ 选中区域图片上传完成 ({len(mapping)} 张)")
+        self._start_selection_rewrite(rewrite_content, mode, full_text, start, end)
+
+    def _start_selection_rewrite(self, content, mode, full_text, start, end):
         system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
         self.ai_rewriter.config.system_prompt = system_prompt
 
@@ -1616,7 +1656,7 @@ class MainWindow(QMainWindow):
 
         self._rewrite_gen += 1
         gen = self._rewrite_gen
-        self.rewrite_worker = RewriteWorker(self.ai_rewriter, rewrite_content)
+        self.rewrite_worker = RewriteWorker(self.ai_rewriter, content)
         self.rewrite_worker.finished.connect(
             lambda result, g=gen: self._on_selection_rewritten(result, full_text, start, end, g)
         )
@@ -1651,9 +1691,18 @@ class MainWindow(QMainWindow):
         self.log("✅ 选中区域改写完成，已替换回原文")
 
     def _is_rewriting(self):
-        return hasattr(self, "rewrite_worker") and self.rewrite_worker.isRunning()
+        upload_running = hasattr(self, "_upload_worker") and self._upload_worker.isRunning()
+        rewrite_running = hasattr(self, "rewrite_worker") and self.rewrite_worker.isRunning()
+        return upload_running or rewrite_running
 
     def _cancel_rewrite(self):
+        if hasattr(self, "_upload_worker") and self._upload_worker.isRunning():
+            self._upload_worker.requestInterruption()
+            self._upload_worker.wait(5000)
+            self._cancel_pending = True
+            self._reset_rewrite_ui()
+            self.log("⏹️ 图片上传已取消")
+            return
         self.rewrite_worker.cancel()
         self.rewrite_worker.wait(5000)
         self.log("⏹️ AI 改写已取消")
@@ -1795,26 +1844,7 @@ class MainWindow(QMainWindow):
         custom_prompt = self.settings.get("ai_custom_prompt", "").strip()
         use_custom = self.settings.get("ai_use_custom_prompt", False)
         if use_custom and custom_prompt:
-            img_rules = {
-                "alt": (
-                    "\n\n图片处理：\n"
-                    "- 对于笔记中的图片 ![](path)：\n"
-                    "  - 根据上下文生成有意义的 alt 描述文本\n"
-                    "  - **删除括号中的路径**，只保留 ![]()\n"
-                    "  - 如果无法推断内容，标注为 ![相关截图]"
-                ),
-                "upload": (
-                    "\n\n图片处理：\n"
-                    "- 对于笔记中的图片 ![](url)：\n"
-                    "  - **保留 URL 不变**，不要删除或修改括号中的地址\n"
-                    "  - 根据上下文优化 alt 描述文本"
-                ),
-                "keep": (
-                    "\n\n图片处理：\n"
-                    "- **不要修改任何图片标记**，保持原样不变"
-                ),
-            }
-            return custom_prompt + img_rules.get(mode, img_rules["alt"])
+            return custom_prompt
         tone_prompts = {
             "技术博主风": (
                 "你是一位CSDN技术博主，请将下面的笔记内容改写成CSDN博客风格：\n\n"
