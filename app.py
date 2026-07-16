@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self.rewritten_content = ""
         self.current_result = None
         self.drafts = []
+        self._rewrite_gen = 0
         self._setup_ui()
         self._restore_ai_settings()
         self._custom_tone_text = ""
@@ -421,7 +422,11 @@ class MainWindow(QMainWindow):
                 enc = locale.getpreferredencoding()
                 content = Path(filepath).read_text(encoding=enc)
             except Exception:
-                content = Path(filepath).read_text(encoding="gbk")
+                try:
+                    content = Path(filepath).read_text(encoding="gbk")
+                except Exception as e2:
+                    QMessageBox.warning(self, "读取失败", f"无法读取文件:\n{e2}")
+                    return
         except Exception as e:
             QMessageBox.warning(self, "读取失败", f"无法读取文件:\n{e}")
             return
@@ -1531,10 +1536,18 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(False)
         self.btn_copy.setEnabled(False)
 
+        self._rewrite_gen += 1
+        gen = self._rewrite_gen
         self.rewrite_worker = RewriteWorker(self.ai_rewriter, rewrite_content)
-        self.rewrite_worker.finished.connect(self._on_rewrite_finished)
-        self.rewrite_worker.error.connect(self._on_rewrite_error)
-        self.rewrite_worker.cancelled.connect(self._on_rewrite_cancelled)
+        self.rewrite_worker.finished.connect(
+            lambda result, g=gen: self._on_rewrite_finished(result, g)
+        )
+        self.rewrite_worker.error.connect(
+            lambda msg, g=gen: self._on_rewrite_error(msg, g)
+        )
+        self.rewrite_worker.cancelled.connect(
+            lambda g=gen: self._on_rewrite_cancelled(g)
+        )
         self.rewrite_worker.start()
 
     def _rewrite_selection(self, cursor):
@@ -1593,15 +1606,23 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(False)
         self.btn_copy.setEnabled(False)
 
+        self._rewrite_gen += 1
+        gen = self._rewrite_gen
         self.rewrite_worker = RewriteWorker(self.ai_rewriter, rewrite_content)
         self.rewrite_worker.finished.connect(
-            lambda result: self._on_selection_rewritten(result, full_text, start, end)
+            lambda result, g=gen: self._on_selection_rewritten(result, full_text, start, end, g)
         )
-        self.rewrite_worker.error.connect(self._on_rewrite_error)
-        self.rewrite_worker.cancelled.connect(self._on_rewrite_cancelled)
+        self.rewrite_worker.error.connect(
+            lambda msg, g=gen: self._on_rewrite_error(msg, g)
+        )
+        self.rewrite_worker.cancelled.connect(
+            lambda g=gen: self._on_rewrite_cancelled(g)
+        )
         self.rewrite_worker.start()
 
-    def _on_selection_rewritten(self, rewritten, full_text, start, end):
+    def _on_selection_rewritten(self, rewritten, full_text, start, end, gen):
+        if gen != self._rewrite_gen:
+            return
         if self.rewrite_worker.isInterruptionRequested():
             self._on_rewrite_cancelled()
             return
@@ -1629,7 +1650,9 @@ class MainWindow(QMainWindow):
         self.rewrite_worker.wait(5000)
         self.log("⏹️ AI 改写已取消")
 
-    def _on_rewrite_finished(self, result):
+    def _on_rewrite_finished(self, result, gen):
+        if gen != self._rewrite_gen:
+            return
         self.rewritten_content = result
         self.rewritten_view.setText(result)
         self.content_tabs.setTabEnabled(2, True)
@@ -1646,13 +1669,17 @@ class MainWindow(QMainWindow):
         self._save_draft(result)
         self.log("✅ AI 改写完成")
 
-    def _on_rewrite_error(self, error_msg):
+    def _on_rewrite_error(self, error_msg, gen):
+        if gen != self._rewrite_gen:
+            return
         self._reset_rewrite_ui()
 
         QMessageBox.critical(self, "AI 改写失败", f"改写出错:\n{error_msg}")
         self.log(f"❌ AI 改写失败: {error_msg}")
 
-    def _on_rewrite_cancelled(self):
+    def _on_rewrite_cancelled(self, gen):
+        if gen != self._rewrite_gen:
+            return
         self._reset_rewrite_ui()
         self.log("⏹️ AI 改写已取消")
 
@@ -1966,13 +1993,14 @@ class MainWindow(QMainWindow):
             self.log("🖼️ 正在将图片转为 base64...")
             self.status_label.setText("正在嵌入图片...")
             QApplication.processEvents()
-            content = self._embed_images_base64(content)
 
         self.log(f"📤 正在发布到 CSDN: {title}")
         self.status_label.setText("发布中...")
         QApplication.processEvents()
 
         try:
+            if use_base64:
+                content = self._embed_images_base64(content)
             from csdn_publisher import publish as csdn_publish
             result = csdn_publish(
                 title=title,
