@@ -98,6 +98,15 @@ class CsdnPublisher(BasePublisher):
             "user-agent": _USER_AGENT,
         }
 
+        if content:
+            from publishers.csdn_image import process_markdown_images
+            content, image_warnings = process_markdown_images(content, self._cookies)
+            if image_warnings:
+                return PublishResult(
+                    False, self.name,
+                    error="图片转存失败: " + "; ".join(image_warnings),
+                )
+
         html_content = mistune.html(content)
         payload = {
             "title": title,
