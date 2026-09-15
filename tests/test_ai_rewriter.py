@@ -1,4 +1,6 @@
 from ai_rewriter import AIRewriter, RewriteConfig, _split_into_blocks
+
+import pytest
 def _rewriter(chunk_size=100):
     return AIRewriter(RewriteConfig(chunk_size=chunk_size))
 
@@ -132,3 +134,53 @@ def test_generate_meta_parses_json_from_text():
     )
     meta = r.generate_meta("# 文章")
     assert meta == {"title": "标题", "tags": "a,b", "summary": "摘要"}
+
+
+class _FakeGetResponse:
+    def __init__(self, body, status=200):
+        self.status_code = status
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+class _FakeGetClient:
+    def __init__(self, resp):
+        self._resp = resp
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, *args, **kwargs):
+        return self._resp
+
+
+def test_list_models_parses_sorts_and_dedupes(monkeypatch):
+    import ai_rewriter
+
+    monkeypatch.setattr(
+        ai_rewriter.http_client,
+        "client",
+        lambda **kwargs: _FakeGetClient(
+            _FakeGetResponse({"data": [{"id": "b"}, {"id": "a"}, {"id": "a"}]})
+        ),
+    )
+    assert AIRewriter.list_models("https://x/v1", "k") == ["a", "b"]
+
+
+def test_list_models_requires_key():
+    with pytest.raises(ValueError):
+        AIRewriter.list_models("https://x/v1", "")
+
+
+def test_supported_models_are_current():
+    values = {m["value"] for m in AIRewriter.supported_models()}
+    assert "deepseek-v4-pro" in values
+    assert "kimi-k3" in values
+    assert "glm-5.3" in values
+    assert "gpt-4o" not in values
+    assert "moonshot-v1-8k" not in values

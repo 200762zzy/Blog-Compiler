@@ -54,15 +54,16 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 🤖 AI 改写
 
-支持的模型（⚙ 设置中配置 API Key）：
+支持的模型（⚙ 设置中配置 API Key，点「刷新模型列表」可拉取各平台最新可用模型）：
 
-| 服务商 | 模型 |
-|--------|------|
-| OpenAI | `gpt-4o` / `gpt-4o-mini` |
-| DeepSeek | `deepseek-chat` / `deepseek-reasoner` |
-| 月之暗面 | `moonshot-v1-8k` |
-| 阿里通义 | `qwen-max` |
-| 智谱 | `glm-4` |
+| 服务商 | 模型示例 |
+|--------|----------|
+| OpenAI | `gpt-5.5` / `gpt-5.4-mini` |
+| DeepSeek | `deepseek-v4-pro` / `deepseek-flash` |
+| 月之暗面 Kimi | `kimi-k3` / `kimi-k2.6` |
+| 阿里通义 | `qwen3.8-max` / `qwen3.8-flash` |
+| 智谱 GLM | `glm-5.3` / `glm-4.7` |
+| 硅基流动 / 火山方舟 / OpenRouter / Ollama | 任意 OpenAI 兼容模型（动态获取） |
 | 自定义 | 任意 OpenAI 兼容模型 |
 
 ### 🖼️ 图片处理

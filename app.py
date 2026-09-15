@@ -1012,7 +1012,14 @@ class MainWindow(QMainWindow):
                 found = True
         if not found:
             self.settings_model.setEditText(saved_model)
-        ai_layout.addRow("模型:", self.settings_model)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.settings_model, 1)
+        self.refresh_models_btn = QPushButton("刷新模型列表")
+        self.refresh_models_btn.setObjectName("secondaryBtn")
+        self.refresh_models_btn.clicked.connect(self._refresh_models)
+        model_row.addWidget(self.refresh_models_btn)
+        ai_layout.addRow("模型:", model_row)
 
         self.settings_api_base = QLineEdit()
         self.settings_api_base.setPlaceholderText("https://api.openai.com/v1")
@@ -1105,19 +1112,68 @@ class MainWindow(QMainWindow):
 
     def _on_model_changed(self, index):
         data = self.settings_model.currentData()
-        if data and data.get("base"):
+        if not data:
+            return
+        if data.get("base"):
             self.settings_api_base.setText(data["base"])
+        if data.get("value") == "custom" and data.get("base"):
+            self.settings_model.setEditText("")
+
+    def _refresh_models(self):
+        api_base = self.settings_api_base.text().strip() or "https://api.openai.com/v1"
+        api_key = (
+            self.settings_api_key.text().strip()
+            or self.settings.get_encrypted("ai_api_key")
+            or ""
+        )
+        if not api_key:
+            QMessageBox.warning(self, "提示", "请先填写 API Key")
+            return
+
+        self.refresh_models_btn.setEnabled(False)
+        self.refresh_models_btn.setText("获取中...")
+        QApplication.processEvents()
+
+        err = ""
+        ids = []
+        try:
+            ids = AIRewriter.list_models(api_base, api_key)
+        except Exception as e:
+            err = str(e)
+        finally:
+            self.refresh_models_btn.setEnabled(True)
+            self.refresh_models_btn.setText("刷新模型列表")
+
+        if not ids:
+            QMessageBox.warning(
+                self, "刷新失败",
+                f"未能获取模型列表\nAPI 地址: {api_base}\n\n{err}",
+            )
+            return
+
+        current = self.settings_model.currentText().strip()
+        self.settings_model.clear()
+        for mid in ids:
+            self.settings_model.addItem(mid, {"label": mid, "value": mid, "base": api_base})
+        if current:
+            self.settings_model.setEditText(current)
+        self.log(f"🔄 已获取 {len(ids)} 个模型")
+        QMessageBox.information(self, "刷新成功", f"已获取 {len(ids)} 个模型")
 
     def _save_settings(self, dialog):
         api_key = self.settings_api_key.text().strip()
         model_text = self.settings_model.currentText().strip()
         model_data = self.settings_model.currentData()
+        known_labels = {m["label"] for m in AIRewriter.supported_models()}
 
-        if model_data and model_data.get("value") != "custom":
+        if model_data and model_data.get("value") not in ("custom", ""):
             model = model_data["value"]
             api_base = self.settings_api_base.text().strip() or model_data["base"]
         else:
-            model = model_text if model_text and model_text != "自定义 (可编辑)" else "gpt-4o-mini"
+            if model_text and model_text not in known_labels:
+                model = model_text
+            else:
+                model = self.settings.get("ai_model", "deepseek-v4-pro") or "deepseek-v4-pro"
             api_base = self.settings_api_base.text().strip() or "https://api.deepseek.com/v1"
 
         if api_key:

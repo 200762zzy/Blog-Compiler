@@ -313,15 +313,43 @@ class AIRewriter:
         return chunks
 
     @staticmethod
+    def list_models(api_base: str, api_key: str, timeout: float = 20.0) -> list[str]:
+        """Fetch available model IDs from an OpenAI-compatible /models endpoint."""
+        if not api_key:
+            raise ValueError("API Key 未设置")
+        url = f"{api_base.rstrip('/')}/models"
+        with http_client.client(timeout=timeout) as client:
+            resp = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        items = data.get("data") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            raise RuntimeError("响应格式异常")
+        ids = []
+        for it in items:
+            if isinstance(it, dict) and it.get("id"):
+                ids.append(str(it["id"]))
+            elif isinstance(it, str):
+                ids.append(it)
+        return sorted(set(ids))
+
+    @staticmethod
     def supported_models() -> list[dict]:
         return [
-            {"label": "GPT-4o-mini", "value": "gpt-4o-mini", "base": "https://api.openai.com/v1"},
-            {"label": "GPT-4o", "value": "gpt-4o", "base": "https://api.openai.com/v1"},
-            {"label": "DeepSeek-V3", "value": "deepseek-chat", "base": "https://api.deepseek.com/v1"},
-            {"label": "DeepSeek-R1", "value": "deepseek-reasoner", "base": "https://api.deepseek.com/v1"},
-            {"label": "DeepSeek-V4-Flash", "value": "deepseek-v4-flash", "base": "https://api.deepseek.com/v1"},
-            {"label": "Moonshot-v1", "value": "moonshot-v1-8k", "base": "https://api.moonshot.cn/v1"},
-            {"label": "Qwen-Max", "value": "qwen-max", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-            {"label": "GLM-4", "value": "glm-4", "base": "https://open.bigmodel.cn/api/paas/v4"},
+            {"label": "OpenAI GPT-5.5", "value": "gpt-5.5", "base": "https://api.openai.com/v1"},
+            {"label": "OpenAI GPT-5.4-mini", "value": "gpt-5.4-mini", "base": "https://api.openai.com/v1"},
+            {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro", "base": "https://api.deepseek.com/v1"},
+            {"label": "DeepSeek-Flash", "value": "deepseek-flash", "base": "https://api.deepseek.com/v1"},
+            {"label": "Kimi K3", "value": "kimi-k3", "base": "https://api.moonshot.cn/v1"},
+            {"label": "Kimi K2.6", "value": "kimi-k2.6", "base": "https://api.moonshot.cn/v1"},
+            {"label": "通义 Qwen3.8-Max", "value": "qwen3.8-max", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+            {"label": "通义 Qwen3.8-Flash", "value": "qwen3.8-flash", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+            {"label": "智谱 GLM-5.3", "value": "glm-5.3", "base": "https://open.bigmodel.cn/api/paas/v4"},
+            {"label": "智谱 GLM-4.7", "value": "glm-4.7", "base": "https://open.bigmodel.cn/api/paas/v4"},
+            {"label": "硅基流动 (点刷新获取)", "value": "custom", "base": "https://api.siliconflow.cn/v1"},
+            {"label": "火山方舟 (点刷新获取)", "value": "custom", "base": "https://ark.cn-beijing.volces.com/api/v3"},
+            {"label": "OpenRouter (点刷新获取)", "value": "custom", "base": "https://openrouter.ai/api/v1"},
+            {"label": "Ollama 本地 (点刷新获取)", "value": "custom", "base": "http://localhost:11434/v1"},
             {"label": "自定义 (可编辑)", "value": "custom", "base": ""},
         ]
