@@ -89,3 +89,35 @@ class Settings:
         cipher = _get_cipher()
         encrypted = cipher.encrypt(value.encode()).decode()
         self.set(key, encrypted)
+
+    def export_config(self, path: str) -> str:
+        """Write a portable backup (config data + the Fernet key)."""
+        import base64
+
+        key_b64 = None
+        if KEY_FILE.exists():
+            key_b64 = base64.b64encode(KEY_FILE.read_bytes()).decode()
+        bundle = {"app": "blog-compiler", "version": 1, "key": key_b64, "data": self.data}
+        Path(path).write_text(
+            json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return path
+
+    def import_config(self, path: str) -> bool:
+        """Restore a backup created by export_config()."""
+        import base64
+
+        bundle = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = bundle.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("配置文件格式不正确")
+
+        key_b64 = bundle.get("key")
+        if key_b64:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            KEY_FILE.write_bytes(base64.b64decode(key_b64))
+
+        self.data = data
+        self._ensure_defaults()
+        self.save()
+        return True

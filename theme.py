@@ -241,6 +241,12 @@ _TEMPLATE = Template("""
         padding: 24px;
         background-color: transparent;
     }
+    QLabel#onboardTitle {
+        font-size: 18px;
+        font-weight: 600;
+        color: $text_primary;
+        padding-bottom: 8px;
+    }
 
     QTextEdit, QTextBrowser {
         background-color: $bg_input;

@@ -1,8 +1,8 @@
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QByteArray
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices, QPixmap, QPainter, QIcon
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QByteArray, QTimer
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices, QPixmap, QPainter, QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -117,6 +117,191 @@ class ImageUploadWorker(QThread):
         self.finished.emit(mapping)  # incomplete mapping is fine
 
 
+class PublishHistoryDialog(QDialog):
+    def __init__(self, parent, history):
+        super().__init__(parent)
+        self.setWindowTitle("发布历史")
+        self.resize(560, 420)
+        layout = QVBoxLayout(self)
+
+        self.list = QListWidget()
+        layout.addWidget(self.list, 1)
+
+        btn_row = QHBoxLayout()
+        open_btn = QPushButton("打开链接")
+        open_btn.setObjectName("secondaryBtn")
+        open_btn.clicked.connect(self._open)
+        clear_btn = QPushButton("清空历史")
+        clear_btn.setObjectName("secondaryBtn")
+        clear_btn.clicked.connect(self._clear)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(open_btn)
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._populate(history)
+
+    def _populate(self, history):
+        self.list.clear()
+        if not history:
+            self.list.addItem("（暂无发布历史）")
+            return
+        for rec in history:
+            item = QListWidgetItem(
+                f"{rec.get('time','')}  ·  {rec.get('platform','')}  ·  {rec.get('title','')}"
+            )
+            item.setData(Qt.UserRole, rec.get("url", ""))
+            self.list.addItem(item)
+
+    def _open(self):
+        item = self.list.currentItem()
+        if not item:
+            return
+        url = item.data(Qt.UserRole)
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _clear(self):
+        self.parent().settings.set("publish_history", [])
+        self._populate([])
+
+
+class OnboardingDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("欢迎使用 Blog Compiler")
+        self.resize(560, 420)
+
+        layout = QVBoxLayout(self)
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack, 1)
+
+        self.stack.addWidget(self._page(
+            "👋 欢迎使用 Blog Compiler",
+            "把 Typora / Markdown 笔记，一步变成 CSDN / 掘金 / 博客园的博客。\n\n"
+            "读 → AI 改写 → 图片上传 → 一键发布。",
+        ))
+        self.stack.addWidget(self._page(
+            "第一步：配置 AI",
+            "在「设置」中填入 API Key 和模型（支持 OpenAI / DeepSeek / 通义 / 智谱等）。\n"
+            "没有 API Key 也可以只用图片上传与发布功能。",
+            button=("打开设置", self._open_settings),
+        ))
+        self.stack.addWidget(self._page(
+            "第二步：登录发布平台",
+            "在主界面右侧「多平台发布」卡片中，点击各平台的「登录」按钮扫码登录。\n\n"
+            "登录状态会自动保存，下次启动免登录。",
+        ))
+        self.stack.addWidget(self._page(
+            "准备就绪 🚀",
+            "把 .md 文件拖入左侧列表即可开始。\n\n小技巧：按 Ctrl+K 打开命令面板。",
+        ))
+
+        nav = QHBoxLayout()
+        self.skip_btn = QPushButton("跳过")
+        self.skip_btn.setObjectName("secondaryBtn")
+        self.skip_btn.clicked.connect(self.accept)
+        self.back_btn = QPushButton("上一步")
+        self.back_btn.setObjectName("secondaryBtn")
+        self.back_btn.clicked.connect(self._back)
+        self.next_btn = QPushButton("下一步")
+        self.next_btn.setObjectName("primaryBtn")
+        self.next_btn.clicked.connect(self._next)
+        nav.addWidget(self.skip_btn)
+        nav.addStretch()
+        nav.addWidget(self.back_btn)
+        nav.addWidget(self.next_btn)
+        layout.addLayout(nav)
+
+        self._update_nav()
+
+    def _page(self, title, desc, button=None):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        t = QLabel(title)
+        t.setObjectName("onboardTitle")
+        lay.addWidget(t)
+        d = QLabel(desc)
+        d.setWordWrap(True)
+        lay.addWidget(d)
+        if button:
+            btn = QPushButton(button[0])
+            btn.setObjectName("secondaryBtn")
+            btn.clicked.connect(button[1])
+            lay.addWidget(btn)
+        lay.addStretch()
+        return page
+
+    def _open_settings(self):
+        parent = self.parent()
+        if parent is not None:
+            parent._show_settings()
+
+    def _update_nav(self):
+        idx = self.stack.currentIndex()
+        self.back_btn.setEnabled(idx > 0)
+        self.next_btn.setText("完成" if idx == self.stack.count() - 1 else "下一步")
+
+    def _back(self):
+        self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
+        self._update_nav()
+
+    def _next(self):
+        idx = self.stack.currentIndex()
+        if idx >= self.stack.count() - 1:
+            self.accept()
+            return
+        self.stack.setCurrentIndex(idx + 1)
+        self._update_nav()
+
+
+class CommandPalette(QDialog):
+    def __init__(self, parent, commands):
+        super().__init__(parent)
+        self._commands = commands
+        self.setWindowTitle("命令面板")
+        self.resize(460, 340)
+
+        layout = QVBoxLayout(self)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("输入命令...（Enter 执行）")
+        layout.addWidget(self.input)
+
+        self.list = QListWidget()
+        layout.addWidget(self.list, 1)
+
+        self.input.textChanged.connect(self._filter)
+        self.input.returnPressed.connect(self._run_current)
+        self.list.itemActivated.connect(lambda _: self._run_current())
+        self.list.itemClicked.connect(lambda _: self._run_current())
+
+        self._filter("")
+        self.input.setFocus()
+
+    def _filter(self, text):
+        text = text.strip().lower()
+        self.list.clear()
+        for title, _ in self._commands:
+            if not text or text in title.lower():
+                self.list.addItem(title)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _run_current(self):
+        item = self.list.currentItem()
+        if not item:
+            return
+        title = item.text()
+        for t, fn in self._commands:
+            if t == title:
+                self.close()
+                fn()
+                return
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -134,6 +319,9 @@ class MainWindow(QMainWindow):
         self._apply_settings()
         self._update_all_publisher_status()
         self._check_for_updates()
+
+        if not self.settings.get("onboarding_done", False):
+            QTimer.singleShot(400, self._show_onboarding)
 
         ico = QIcon("icon.ico")
         if ico.isNull():
@@ -160,6 +348,11 @@ class MainWindow(QMainWindow):
         msg.button(QMessageBox.No).setText("稍后再说")
         if msg.exec() == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl(url))
+
+    def _show_onboarding(self):
+        dlg = OnboardingDialog(self)
+        dlg.exec()
+        self.settings.set("onboarding_done", True)
 
     def _setup_ui(self):
         self.setWindowTitle("Blog Compiler")
@@ -381,6 +574,33 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
 
         self.setAcceptDrops(True)
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self):
+        QShortcut(QKeySequence("Ctrl+O"), self, self._add_files)
+        QShortcut(QKeySequence("Ctrl+Return"), self, self._ai_rewrite)
+        QShortcut(QKeySequence("Ctrl+K"), self, self._show_command_palette)
+        QShortcut(QKeySequence("Ctrl+,"), self, self._show_settings)
+        QShortcut(QKeySequence("Ctrl+P"), self, self._open_publish_dialog)
+
+    def _show_command_palette(self):
+        commands = [
+            ("添加文件", self._add_files),
+            ("清空文件列表", self._clear_files),
+            ("AI 改写", self._ai_rewrite),
+            ("导出文件", self._export_file),
+            ("复制到剪贴板", self._export_clipboard),
+            ("多平台发布", self._open_publish_dialog),
+            ("发布历史", self._show_publish_history),
+            ("切换暗色/亮色模式", lambda: self.action_dark.toggle()),
+            ("设置", self._show_settings),
+        ]
+        dlg = CommandPalette(self, commands)
+        dlg.exec()
+
+    def _show_publish_history(self):
+        history = self.settings.get("publish_history", []) or []
+        PublishHistoryDialog(self, history).exec()
 
     def _build_command_bar(self):
         bar = QFrame()
@@ -742,6 +962,19 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(net_group)
 
+        backup_group = QGroupBox("备份与还原")
+        backup_layout = QHBoxLayout(backup_group)
+        export_btn = QPushButton("导出配置")
+        export_btn.setObjectName("secondaryBtn")
+        export_btn.clicked.connect(self._export_config)
+        import_btn = QPushButton("导入配置")
+        import_btn.setObjectName("secondaryBtn")
+        import_btn.clicked.connect(self._import_config)
+        backup_layout.addWidget(export_btn)
+        backup_layout.addWidget(import_btn)
+        backup_layout.addStretch()
+        layout.addWidget(backup_group)
+
         prompt_group = QGroupBox("自定义 System Prompt")
         prompt_layout = QVBoxLayout(prompt_group)
         self.settings_custom_prompt = QPlainTextEdit()
@@ -822,6 +1055,40 @@ class MainWindow(QMainWindow):
 
         self.log("✅ AI 设置已保存")
         dialog.accept()
+
+    def _export_config(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出配置", "blog-compiler-backup.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self.settings.export_config(path)
+            QMessageBox.information(self, "导出成功", f"配置已导出到:\n{path}")
+            self.log("💾 配置已导出")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+
+    def _import_config(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入配置", "", "JSON (*.json)")
+        if not path:
+            return
+        reply = QMessageBox.question(
+            self, "确认导入", "导入将覆盖当前配置，是否继续？"
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            self.settings.import_config(path)
+            init_publishers(self.settings)
+            self._apply_settings()
+            self._update_all_publisher_status()
+            QMessageBox.information(
+                self, "导入成功", "配置已导入，部分设置重启后生效"
+            )
+            self.log("📥 配置已导入")
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", str(e))
 
     def _ai_rewrite(self):
         if self._is_rewriting():
@@ -1617,9 +1884,21 @@ class PublishDialog(QDialog):
             self._log(f"✅ {name} 发布成功: {result.url}")
             for w in getattr(result, "warnings", []) or []:
                 self._log(f"⚠️ {name} 图片未转存: {w}")
+            self._record_history(name, result)
         else:
             self._log(f"❌ {name} 发布失败: {result.error}")
         self._set_result(name, result)
+
+    def _record_history(self, name, result):
+        from datetime import datetime
+        history = list(self._settings.get("publish_history", []) or [])
+        history.insert(0, {
+            "platform": name,
+            "title": self._pub_args["title"] if self._pub_args else "",
+            "url": result.url or "",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        })
+        self._settings.set("publish_history", history[:50])
 
     def _publish_platforms(self, names, parallel):
         self.publish_btn.setEnabled(False)
