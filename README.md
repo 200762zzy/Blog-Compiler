@@ -95,6 +95,11 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 - 复制到剪贴板，直接粘贴到编辑器
 - 各平台 Markdown 方言自动适配（CSDN 表格/代码块、掘金图片尺寸等）
 
+### 🚀 v2.1.1 新特性
+
+- **CSDN 图片根治** — 发布前将文章图片直传 CSDN 自家 CDN（华为 OBS，`i-blog.csdnimg.cn`），彻底解决「图片转存失败」
+- **scdn.io 多 CDN 降级** — 图床上传在多个 CDN 域名间自动轮询，单通道故障不影响使用
+
 ### 🚀 v2.1.0 新特性
 
 - **掘金图片上传** — 通过 ByteDance ImageX CDN（`byteimg.com`）自动上传图片，发布时无需额外操作
@@ -120,7 +125,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 下载即用
 
-[![Download](https://img.shields.io/badge/Download-v2.1.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
+[![Download](https://img.shields.io/badge/Download-v2.1.1-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
 
 1. 下载 `BlogCompiler.exe`
 2. 双击运行（无需安装）
