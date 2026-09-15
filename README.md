@@ -96,6 +96,15 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 - 复制到剪贴板，直接粘贴到编辑器
 - 各平台 Markdown 方言自动适配（CSDN 表格/代码块、掘金图片尺寸等）
 
+### 🚀 v3.0.0 新特性
+
+- **现代工作台界面** — 靛青渐变设计系统、左侧图标导航栏、可折叠文件面板与检查器、面包屑与文件搜索
+- **AI 流式输出** — 改写内容实时逐字显示，长文不再干等
+- **稳定性修复** — 修复代码块被切断、CSDN 图片失败不再阻塞发布、上传前自动压缩为 WebP
+- **代理设置** — 支持 HTTP 代理，解决国内网络访问图床/CDN 失败
+- **发布增强** — 发布结果卡片 + 单平台重试、按平台记忆标签/分类、AI 生成标题/标签、CSDN 更新已发布文章
+- **易用性** — 命令面板（Ctrl+K）、首次运行引导、配置备份/还原、发布历史
+
 ### 🚀 v2.1.1 新特性
 
 - **CSDN 图片根治** — 发布前将文章图片直传 CSDN 自家 CDN（华为 OBS，`i-blog.csdnimg.cn`），彻底解决「图片转存失败」
@@ -126,7 +135,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 下载即用
 
-[![Download](https://img.shields.io/badge/Download-v2.1.1-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
+[![Download](https://img.shields.io/badge/Download-v3.0.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
 
 1. 下载 `BlogCompiler.exe`
 2. 双击运行（无需安装）
