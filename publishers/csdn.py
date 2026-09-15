@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 import httpx
 import mistune
 
+import http_client
+
 from publishers.base import BasePublisher, PublishResult
 
 
@@ -98,14 +100,10 @@ class CsdnPublisher(BasePublisher):
             "user-agent": _USER_AGENT,
         }
 
+        image_warnings = []
         if content:
             from publishers.csdn_image import process_markdown_images
             content, image_warnings = process_markdown_images(content, self._cookies)
-            if image_warnings:
-                return PublishResult(
-                    False, self.name,
-                    error="图片转存失败: " + "; ".join(image_warnings),
-                )
 
         html_content = mistune.html(content)
         payload = {
@@ -129,7 +127,7 @@ class CsdnPublisher(BasePublisher):
         }
 
         try:
-            with httpx.Client(cookies=self._cookies, timeout=30.0) as client:
+            with http_client.client(cookies=self._cookies, timeout=30.0) as client:
                 resp = client.post(_SAVE_URL, headers=headers, json=payload)
 
             if resp.status_code != 200:
@@ -146,7 +144,7 @@ class CsdnPublisher(BasePublisher):
                 return PublishResult(False, self.name, error=msg)
 
             url = data.get("data", {}).get("url", "")
-            return PublishResult(True, self.name, url=url)
+            return PublishResult(True, self.name, url=url, warnings=image_warnings)
 
         except httpx.RequestError as e:
             return PublishResult(False, self.name, error=f"网络错误: {e}")

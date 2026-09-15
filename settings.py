@@ -40,6 +40,15 @@ class Settings:
             if key not in self.data:
                 self.data[key] = ""
                 changed = True
+        if "http_proxy" not in self.data:
+            self.data["http_proxy"] = ""
+            changed = True
+        if "image_compress" not in self.data:
+            self.data["image_compress"] = True
+            changed = True
+        if "image_max_width" not in self.data:
+            self.data["image_max_width"] = 1600
+            changed = True
         if changed:
             self.save()
 

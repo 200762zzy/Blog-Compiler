@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QByteArray
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QMessageBox, QProgressBar,
     QDialog, QLineEdit, QComboBox, QFormLayout, QDialogButtonBox,
     QGroupBox, QSpinBox, QDoubleSpinBox, QHBoxLayout, QFrame,
-    QCheckBox, QPlainTextEdit,
+    QCheckBox, QPlainTextEdit, QStackedWidget,
 )
 
 from PySide6.QtSvg import QSvgRenderer
@@ -21,9 +22,11 @@ from settings import Settings
 from ai_rewriter import AIRewriter, RewriteConfig
 from exporter import Exporter
 from image_uploader import upload_images
-from icons import get as get_icon
+from icons import get as get_icon, set_color as set_icon_color
+from theme import build_stylesheet, get_tokens
 from version import VERSION
 from publishers import init_publishers, get_publishers, get_publisher
+from publishers.base import PublishResult
 
 
 class UpdateChecker(QThread):
@@ -31,8 +34,8 @@ class UpdateChecker(QThread):
 
     def run(self):
         try:
-            import httpx
-            resp = httpx.get(
+            import http_client
+            resp = http_client.get(
                 "https://api.github.com/repos/200762zzy/Blog-Compiler/releases/latest",
                 timeout=10.0
             )
@@ -58,11 +61,13 @@ class RewriteWorker(QThread):
     finished = Signal(str)
     error = Signal(str)
     cancelled = Signal()
+    chunk = Signal(str)
 
-    def __init__(self, rewriter, content):
+    def __init__(self, rewriter, content, stream: bool = True):
         super().__init__()
         self.rewriter = rewriter
         self.content = content
+        self.stream = stream
 
     def cancel(self):
         self.rewriter.cancel()
@@ -70,7 +75,12 @@ class RewriteWorker(QThread):
 
     def run(self):
         try:
-            result = self.rewriter.rewrite(self.content)
+            if self.stream:
+                result = self.rewriter.rewrite_stream(
+                    self.content, on_chunk=self.chunk.emit
+                )
+            else:
+                result = self.rewriter.rewrite(self.content)
             if self.isInterruptionRequested():
                 self.cancelled.emit()
             else:
@@ -119,8 +129,9 @@ class MainWindow(QMainWindow):
         self._rewrite_gen = 0
         init_publishers(self.settings)
         self._setup_ui()
-        self._restore_ai_settings()
         self._custom_tone_text = ""
+        self._restore_ai_settings()
+        self._apply_settings()
         self._update_all_publisher_status()
         self._check_for_updates()
 
@@ -170,9 +181,20 @@ class MainWindow(QMainWindow):
         self.file_list = QListWidget()
         self.file_list.setObjectName("fileList")
         self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.file_list.setMinimumWidth(200)
-        self.file_list.setMaximumWidth(350)
         self.file_list.itemClicked.connect(self._on_file_selected)
+
+        self.file_empty = QLabel("拖入 .md 文件\n或点击上方「添加文件」")
+        self.file_empty.setObjectName("emptyState")
+        self.file_empty.setAlignment(Qt.AlignCenter)
+        self.file_empty.setWordWrap(True)
+
+        self.file_stack = QStackedWidget()
+        self.file_stack.setObjectName("fileStack")
+        self.file_stack.setMinimumWidth(200)
+        self.file_stack.setMaximumWidth(350)
+        self.file_stack.addWidget(self.file_empty)
+        self.file_stack.addWidget(self.file_list)
+        self.file_stack.setCurrentIndex(0)
 
         self.content_tabs = QTabWidget()
         self.content_tabs.setObjectName("contentTabs")
@@ -336,7 +358,7 @@ class MainWindow(QMainWindow):
 
         right_layout.addStretch()
 
-        splitter.addWidget(self.file_list)
+        splitter.addWidget(self.file_stack)
         splitter.addWidget(self.content_tabs)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
@@ -368,7 +390,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(4)
 
-        logo_data = QByteArray(b'<svg viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="6" fill="#06B6D4"/><text x="16" y="22" text-anchor="middle" fill="white" font-size="18" font-weight="bold" font-family="sans-serif">B</text></svg>')
+        logo_svg = (
+            '<svg viewBox="0 0 32 32" fill="none">'
+            '<defs><linearGradient id="blogc" x1="0" y1="0" x2="32" y2="32" '
+            'gradientUnits="userSpaceOnUse">'
+            '<stop stop-color="#4F46E5"/><stop offset="1" stop-color="#06B6D4"/>'
+            '</linearGradient></defs>'
+            '<rect width="32" height="32" rx="8" fill="url(#blogc)"/>'
+            '<text x="16" y="22" text-anchor="middle" fill="white" font-size="18" '
+            'font-weight="bold" font-family="sans-serif">B</text></svg>'
+        )
+        logo_data = QByteArray(logo_svg.encode("utf-8"))
         logo_pix = QPixmap(28, 28)
         logo_pix.fill(Qt.transparent)
         p = QPainter(logo_pix)
@@ -517,798 +549,59 @@ class MainWindow(QMainWindow):
             self.image_status_list.setVisible(False)
 
     def _toggle_dark(self, checked):
-        if checked:
-            self._apply_dark_theme()
-            self.action_dark.setIcon(get_icon("light"))
-            self.action_dark.setToolTip("切换亮色模式")
-            self.settings.set("dark_mode", True)
-            self.log("已切换暗色模式")
-        else:
-            self._apply_light_theme()
-            self.action_dark.setIcon(get_icon("dark"))
-            self.action_dark.setToolTip("切换暗色模式")
-            self.settings.set("dark_mode", False)
-            self.log("已切换亮色模式")
+        self._apply_theme("dark" if checked else "light")
+        self.action_dark.setToolTip("切换亮色模式" if checked else "切换暗色模式")
+        self.settings.set("dark_mode", checked)
+        self.log("已切换暗色模式" if checked else "已切换亮色模式")
 
-    def _apply_dark_theme(self):
-        self.setStyleSheet("""
-            QMainWindow, QWidget#rightPanel {
-                background-color: #1a1a1a;
-                color: #E2E8F0;
-            }
-            QWidget {
-                background-color: transparent;
-                color: #E2E8F0;
-                font-size: 13px;
-            }
-            QFrame#commandBar {
-                background-color: #1f1f1f;
-                border-bottom: 1px solid #2e2e2e;
-            }
-            QLabel#barTitle {
-                font-size: 14px;
-                font-weight: 600;
-                color: #E2E8F0;
-            }
-            QPushButton#cmdBtn {
-                background-color: transparent;
-                color: #94A3B8;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 6px;
-                font-size: 13px;
-            }
-            QPushButton#cmdBtn:hover {
-                background-color: #2e2e2e;
-                color: #E2E8F0;
-            }
-            QPushButton#cmdIconBtn {
-                background-color: transparent;
-                color: #94A3B8;
-                border: none;
-                border-radius: 6px;
-                padding: 6px;
-                min-width: 32px;
-                min-height: 32px;
-            }
-            QPushButton#cmdIconBtn:hover {
-                background-color: #2e2e2e;
-                color: #E2E8F0;
-            }
-            QPushButton#cmdIconBtn:checked {
-                background-color: #06B6D4;
-                color: white;
-            }
-            QFrame#card {
-                background-color: #242424;
-                border: 1px solid #2e2e2e;
-                border-radius: 8px;
-            }
-            QLabel#cardTitle {
-                font-size: 12px;
-                font-weight: 600;
-                color: #94A3B8;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                padding-bottom: 4px;
-            }
-            QPushButton#primaryBtn {
-                background-color: #06B6D4;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            QPushButton#primaryBtn:hover {
-                background-color: #22D3EE;
-            }
-            QPushButton#primaryBtn:pressed {
-                background-color: #0891B2;
-            }
-            QPushButton#primaryBtn:disabled {
-                background-color: #155e75;
-                color: #94A3B8;
-            }
-            QPushButton#secondaryBtn {
-                background-color: transparent;
-                color: #E2E8F0;
-                border: 1px solid #3e3e3e;
-                border-radius: 6px;
-                padding: 7px 16px;
-                font-size: 13px;
-            }
-            QPushButton#secondaryBtn:hover {
-                background-color: #2e2e2e;
-                border-color: #555555;
-            }
-            QPushButton#secondaryBtn:disabled {
-                color: #555555;
-                border-color: #333333;
-            }
-            QLabel#csdnStatus {
-                font-size: 12px;
-                color: #94A3B8;
-            }
-            QListWidget, QListWidget#fileList {
-                background-color: #1e1e1e;
-                color: #E2E8F0;
-                border: none;
-                border-radius: 0px;
-                outline: none;
-            }
-            QListWidget::item {
-                padding: 8px 12px;
-                border-radius: 6px;
-                margin: 2px 6px;
-            }
-            QListWidget::item:selected {
-                background-color: #06B6D4;
-                color: white;
-            }
-            QListWidget::item:hover:!selected {
-                background-color: #2a2a2a;
-            }
-            QListWidget#imageStatus {
-                background-color: #1e1e1e;
-                border: 1px solid #2e2e2e;
-                border-radius: 6px;
-                font-size: 12px;
-            }
-            QListWidget#imageStatus::item {
-                padding: 4px 8px;
-                margin: 1px 4px;
-                border-radius: 4px;
-            }
-            QTextEdit, QTextBrowser {
-                background-color: #1e1e1e;
-                color: #E2E8F0;
-                border: none;
-                border-radius: 0px;
-                padding: 8px;
-            }
-            QTextEdit#editor {
-                border: none;
-            }
-            QTextEdit#logView {
-                background-color: #1a1a1a;
-                border: 1px solid #2e2e2e;
-                border-radius: 6px;
-                font-size: 12px;
-                padding: 6px;
-            }
-            QLabel#previewStats {
-                background-color: #1e1e1e;
-                border: 1px solid #2e2e2e;
-                border-radius: 6px;
-                padding: 10px;
-                font-size: 12px;
-            }
-            QTabWidget#contentTabs::pane {
-                background-color: #1e1e1e;
-                border: none;
-                border-top: 1px solid #2e2e2e;
-            }
-            QTabBar::tab {
-                background-color: transparent;
-                color: #64748B;
-                border: none;
-                padding: 8px 20px;
-                font-size: 13px;
-                border-bottom: 2px solid transparent;
-            }
-            QTabBar::tab:selected {
-                color: #06B6D4;
-                border-bottom: 2px solid #06B6D4;
-            }
-            QTabBar::tab:hover:!selected {
-                color: #94A3B8;
-                border-bottom: 2px solid #3e3e3e;
-            }
-            QComboBox, QComboBox#draftCombo {
-                background-color: #1e1e1e;
-                color: #E2E8F0;
-                border: 1px solid #3e3e3e;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 12px;
-                min-height: 20px;
-            }
-            QComboBox:hover {
-                border-color: #555555;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid #94A3B8;
-                margin-right: 6px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #242424;
-                color: #E2E8F0;
-                border: 1px solid #3e3e3e;
-                border-radius: 6px;
-                selection-background-color: #06B6D4;
-                selection-color: white;
-                padding: 4px;
-            }
-            QPushButton#draftBtn {
-                background-color: transparent;
-                color: #94A3B8;
-                border: 1px solid #3e3e3e;
-                border-radius: 6px;
-                padding: 4px 10px;
-                font-size: 11px;
-                min-width: 40px;
-            }
-            QPushButton#draftBtn:hover {
-                background-color: #2e2e2e;
-                color: #E2E8F0;
-            }
-            QPushButton#draftBtn:disabled {
-                color: #555555;
-                border-color: #333333;
-            }
-            QRadioButton {
-                spacing: 8px;
-                font-size: 12px;
-                color: #94A3B8;
-                padding: 4px 0;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #555555;
-                background-color: transparent;
-            }
-            QRadioButton::indicator:checked {
-                border: 2px solid #06B6D4;
-                background-color: #06B6D4;
-            }
-            QRadioButton::indicator:hover {
-                border-color: #94A3B8;
-            }
-            QProgressBar#progressBar {
-                background-color: #1e1e1e;
-                border: none;
-                border-radius: 4px;
-                text-align: center;
-                color: white;
-                font-size: 11px;
-                height: 6px;
-            }
-            QProgressBar::chunk {
-                background-color: #06B6D4;
-                border-radius: 4px;
-            }
-            QStatusBar#statusBar {
-                background-color: #06B6D4;
-                color: white;
-                font-size: 12px;
-                padding: 2px 12px;
-                border: none;
-            }
-            QStatusBar::item {
-                border: none;
-            }
-            QLabel#statusLabel {
-                color: white;
-                font-size: 12px;
-            }
-            QSplitter::handle {
-                background-color: #2e2e2e;
-            }
-            QScrollBar:vertical {
-                background-color: #1a1a1a;
-                width: 8px;
-                margin: 0;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #333333;
-                border-radius: 4px;
-                min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #555555;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-                background: none;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-            }
-            QScrollBar:horizontal {
-                background-color: #1a1a1a;
-                height: 8px;
-                margin: 0;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:horizontal {
-                background-color: #333333;
-                border-radius: 4px;
-                min-width: 30px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background-color: #555555;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                width: 0;
-                background: none;
-            }
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-                background: none;
-            }
-            QDialog {
-                background-color: #242424;
-            }
-            QGroupBox {
-                border: 1px solid #2e2e2e;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 16px;
-                font-size: 13px;
-                color: #94A3B8;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-            }
-            QLineEdit {
-                background-color: #1e1e1e;
-                color: #E2E8F0;
-                border: 1px solid #3e3e3e;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border-color: #06B6D4;
-            }
-            QDoubleSpinBox, QSpinBox {
-                background-color: #1e1e1e;
-                color: #E2E8F0;
-                border: 1px solid #3e3e3e;
-                border-radius: 6px;
-                padding: 4px 8px;
-                font-size: 13px;
-            }
-            QCheckBox {
-                spacing: 8px;
-                font-size: 13px;
-                color: #E2E8F0;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 2px solid #555555;
-                background-color: transparent;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #06B6D4;
-                border-color: #06B6D4;
-            }
-            QCheckBox::indicator:hover {
-                border-color: #94A3B8;
-            }
-            QDialogButtonBox QPushButton {
-                background-color: #06B6D4;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 20px;
-                font-size: 13px;
-                min-width: 80px;
-            }
-            QDialogButtonBox QPushButton:hover {
-                background-color: #22D3EE;
-            }
-        """)
+    def _apply_theme(self, theme: str):
+        self._theme = theme
+        tokens = get_tokens(theme)
+        set_icon_color(tokens["text_secondary"])
+        self.setStyleSheet(build_stylesheet(theme))
+        self._refresh_icons()
 
-    def _apply_light_theme(self):
-        self.setStyleSheet("""
-            QMainWindow, QWidget#rightPanel {
-                background-color: #F5F5F5;
-                color: #1E293B;
-            }
-            QWidget {
-                background-color: transparent;
-                color: #1E293B;
-                font-size: 13px;
-            }
-            QFrame#commandBar {
-                background-color: #FFFFFF;
-                border-bottom: 1px solid #E2E8F0;
-            }
-            QLabel#barTitle {
-                font-size: 14px;
-                font-weight: 600;
-                color: #1E293B;
-            }
-            QPushButton#cmdBtn {
-                background-color: transparent;
-                color: #64748B;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 6px;
-                font-size: 13px;
-            }
-            QPushButton#cmdBtn:hover {
-                background-color: #F1F5F9;
-                color: #1E293B;
-            }
-            QPushButton#cmdIconBtn {
-                background-color: transparent;
-                color: #64748B;
-                border: none;
-                border-radius: 6px;
-                padding: 6px;
-                min-width: 32px;
-                min-height: 32px;
-            }
-            QPushButton#cmdIconBtn:hover {
-                background-color: #F1F5F9;
-                color: #1E293B;
-            }
-            QPushButton#cmdIconBtn:checked {
-                background-color: #0891B2;
-                color: white;
-            }
-            QFrame#card {
-                background-color: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 8px;
-            }
-            QLabel#cardTitle {
-                font-size: 12px;
-                font-weight: 600;
-                color: #64748B;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                padding-bottom: 4px;
-            }
-            QPushButton#primaryBtn {
-                background-color: #0891B2;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            QPushButton#primaryBtn:hover {
-                background-color: #0E7490;
-            }
-            QPushButton#primaryBtn:pressed {
-                background-color: #155E75;
-            }
-            QPushButton#primaryBtn:disabled {
-                background-color: #CBD5E1;
-                color: #94A3B8;
-            }
-            QPushButton#secondaryBtn {
-                background-color: transparent;
-                color: #1E293B;
-                border: 1px solid #CBD5E1;
-                border-radius: 6px;
-                padding: 7px 16px;
-                font-size: 13px;
-            }
-            QPushButton#secondaryBtn:hover {
-                background-color: #F8FAFC;
-                border-color: #94A3B8;
-            }
-            QPushButton#secondaryBtn:disabled {
-                color: #CBD5E1;
-                border-color: #E2E8F0;
-            }
-            QLabel#csdnStatus {
-                font-size: 12px;
-                color: #64748B;
-            }
-            QListWidget, QListWidget#fileList {
-                background-color: #FFFFFF;
-                color: #1E293B;
-                border: none;
-                border-radius: 0px;
-                outline: none;
-            }
-            QListWidget::item {
-                padding: 8px 12px;
-                border-radius: 6px;
-                margin: 2px 6px;
-            }
-            QListWidget::item:selected {
-                background-color: #0891B2;
-                color: white;
-            }
-            QListWidget::item:hover:!selected {
-                background-color: #F1F5F9;
-            }
-            QListWidget#imageStatus {
-                background-color: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 6px;
-                font-size: 12px;
-            }
-            QListWidget#imageStatus::item {
-                padding: 4px 8px;
-                margin: 1px 4px;
-                border-radius: 4px;
-            }
-            QTextEdit, QTextBrowser {
-                background-color: #FFFFFF;
-                color: #1E293B;
-                border: none;
-                border-radius: 0px;
-                padding: 8px;
-            }
-            QTextEdit#editor {
-                border: none;
-            }
-            QTextEdit#logView {
-                background-color: #FAFAFA;
-                border: 1px solid #E2E8F0;
-                border-radius: 6px;
-                font-size: 12px;
-                padding: 6px;
-            }
-            QLabel#previewStats {
-                background-color: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 6px;
-                padding: 10px;
-                font-size: 12px;
-            }
-            QTabWidget#contentTabs::pane {
-                background-color: #FFFFFF;
-                border: none;
-                border-top: 1px solid #E2E8F0;
-            }
-            QTabBar::tab {
-                background-color: transparent;
-                color: #94A3B8;
-                border: none;
-                padding: 8px 20px;
-                font-size: 13px;
-                border-bottom: 2px solid transparent;
-            }
-            QTabBar::tab:selected {
-                color: #0891B2;
-                border-bottom: 2px solid #0891B2;
-            }
-            QTabBar::tab:hover:!selected {
-                color: #64748B;
-                border-bottom: 2px solid #CBD5E1;
-            }
-            QComboBox, QComboBox#draftCombo {
-                background-color: #FFFFFF;
-                color: #1E293B;
-                border: 1px solid #CBD5E1;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 12px;
-                min-height: 20px;
-            }
-            QComboBox:hover {
-                border-color: #94A3B8;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid #64748B;
-                margin-right: 6px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #FFFFFF;
-                color: #1E293B;
-                border: 1px solid #E2E8F0;
-                border-radius: 6px;
-                selection-background-color: #0891B2;
-                selection-color: white;
-                padding: 4px;
-            }
-            QPushButton#draftBtn {
-                background-color: transparent;
-                color: #64748B;
-                border: 1px solid #CBD5E1;
-                border-radius: 6px;
-                padding: 4px 10px;
-                font-size: 11px;
-                min-width: 40px;
-            }
-            QPushButton#draftBtn:hover {
-                background-color: #F1F5F9;
-                color: #1E293B;
-            }
-            QPushButton#draftBtn:disabled {
-                color: #CBD5E1;
-                border-color: #E2E8F0;
-            }
-            QRadioButton {
-                spacing: 8px;
-                font-size: 12px;
-                color: #64748B;
-                padding: 4px 0;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #CBD5E1;
-                background-color: transparent;
-            }
-            QRadioButton::indicator:checked {
-                border: 2px solid #0891B2;
-                background-color: #0891B2;
-            }
-            QRadioButton::indicator:hover {
-                border-color: #94A3B8;
-            }
-            QProgressBar#progressBar {
-                background-color: #E2E8F0;
-                border: none;
-                border-radius: 4px;
-                text-align: center;
-                color: white;
-                font-size: 11px;
-                height: 6px;
-            }
-            QProgressBar::chunk {
-                background-color: #0891B2;
-                border-radius: 4px;
-            }
-            QStatusBar#statusBar {
-                background-color: #0891B2;
-                color: white;
-                font-size: 12px;
-                padding: 2px 12px;
-                border: none;
-            }
-            QStatusBar::item {
-                border: none;
-            }
-            QLabel#statusLabel {
-                color: white;
-                font-size: 12px;
-            }
-            QSplitter::handle {
-                background-color: #E2E8F0;
-            }
-            QScrollBar:vertical {
-                background-color: #F5F5F5;
-                width: 8px;
-                margin: 0;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #CBD5E1;
-                border-radius: 4px;
-                min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #94A3B8;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-                background: none;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-            }
-            QScrollBar:horizontal {
-                background-color: #F5F5F5;
-                height: 8px;
-                margin: 0;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:horizontal {
-                background-color: #CBD5E1;
-                border-radius: 4px;
-                min-width: 30px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background-color: #94A3B8;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                width: 0;
-                background: none;
-            }
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-                background: none;
-            }
-            QDialog {
-                background-color: #FFFFFF;
-            }
-            QGroupBox {
-                border: 1px solid #E2E8F0;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 16px;
-                font-size: 13px;
-                color: #64748B;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-            }
-            QLineEdit {
-                background-color: #FFFFFF;
-                color: #1E293B;
-                border: 1px solid #CBD5E1;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border-color: #0891B2;
-            }
-            QDoubleSpinBox, QSpinBox {
-                background-color: #FFFFFF;
-                color: #1E293B;
-                border: 1px solid #CBD5E1;
-                border-radius: 6px;
-                padding: 4px 8px;
-                font-size: 13px;
-            }
-            QCheckBox {
-                spacing: 8px;
-                font-size: 13px;
-                color: #1E293B;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 2px solid #CBD5E1;
-                background-color: transparent;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #0891B2;
-                border-color: #0891B2;
-            }
-            QCheckBox::indicator:hover {
-                border-color: #94A3B8;
-            }
-            QDialogButtonBox QPushButton {
-                background-color: #0891B2;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 20px;
-                font-size: 13px;
-                min-width: 80px;
-            }
-            QDialogButtonBox QPushButton:hover {
-                background-color: #0E7490;
-            }
-        """)
+    def _refresh_icons(self):
+        tokens = get_tokens(getattr(self, "_theme", "dark"))
+        primary = "#FFFFFF"
+        secondary = tokens["text_secondary"]
+        mapping = {
+            "btn_ai": ("ai", primary),
+            "btn_multi_publish": ("publish", primary),
+            "btn_export": ("export", secondary),
+            "btn_copy": ("copy", secondary),
+            "action_add": ("add", secondary),
+            "action_clear": ("clear", secondary),
+            "action_settings": ("settings", secondary),
+        }
+        for attr, (name, color) in mapping.items():
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setIcon(get_icon(name, color=color))
+        if hasattr(self, "action_dark"):
+            dark_on = getattr(self, "_theme", "dark") == "dark"
+            self.action_dark.setIcon(
+                get_icon("light" if dark_on else "dark", color=secondary)
+            )
 
     def _apply_settings(self):
-        if self.settings.get("dark_mode", False):
-            self.action_dark.setChecked(True)
-            self.action_dark.setIcon(get_icon("light"))
-            self._apply_dark_theme()
+        dark = self.settings.get("dark_mode", False)
+        self.action_dark.setChecked(dark)
+        self._apply_theme("dark" if dark else "light")
+
+        import http_client
+        http_client.set_proxy(self.settings.get("http_proxy", ""))
+
+        import image_processor
+        image_processor.configure(
+            enabled=self.settings.get("image_compress", True),
+            max_width=self.settings.get("image_max_width", 1600),
+        )
 
     def _update_status(self):
         count = len(self.file_paths)
         self.file_count_label.setText(f"文件: {count}")
+        self.file_stack.setCurrentIndex(1 if count else 0)
 
     def log(self, message: str):
         from datetime import datetime
@@ -1426,6 +719,29 @@ class MainWindow(QMainWindow):
         self.settings_model.currentIndexChanged.connect(self._on_model_changed)
         layout.addWidget(ai_group)
 
+        net_group = QGroupBox("网络与图片")
+        net_layout = QFormLayout(net_group)
+
+        self.settings_proxy = QLineEdit()
+        self.settings_proxy.setPlaceholderText("例如 http://127.0.0.1:7890（留空不使用代理）")
+        self.settings_proxy.setText(self.settings.get("http_proxy", ""))
+        net_layout.addRow("HTTP 代理:", self.settings_proxy)
+
+        self.settings_compress = QCheckBox("上传前压缩图片（转 WebP，减小体积）")
+        self.settings_compress.setChecked(self.settings.get("image_compress", True))
+        net_layout.addRow(self.settings_compress)
+
+        width_row = QHBoxLayout()
+        self.settings_max_width = QSpinBox()
+        self.settings_max_width.setRange(320, 4096)
+        self.settings_max_width.setSingleStep(160)
+        self.settings_max_width.setValue(self.settings.get("image_max_width", 1600))
+        width_row.addWidget(self.settings_max_width)
+        width_row.addWidget(QLabel("(超过则等比缩小)"))
+        net_layout.addRow("图片最大宽度:", width_row)
+
+        layout.addWidget(net_group)
+
         prompt_group = QGroupBox("自定义 System Prompt")
         prompt_layout = QVBoxLayout(prompt_group)
         self.settings_custom_prompt = QPlainTextEdit()
@@ -1482,6 +798,19 @@ class MainWindow(QMainWindow):
         self.settings.set("ai_tone_custom", self._custom_tone_text)
         self.settings.set("ai_custom_prompt", self.settings_custom_prompt.toPlainText())
         self.settings.set("ai_use_custom_prompt", self.settings_use_custom.isChecked())
+
+        proxy = self.settings_proxy.text().strip()
+        self.settings.set("http_proxy", proxy)
+        import http_client
+        http_client.set_proxy(proxy)
+
+        self.settings.set("image_compress", self.settings_compress.isChecked())
+        self.settings.set("image_max_width", self.settings_max_width.value())
+        import image_processor
+        image_processor.configure(
+            enabled=self.settings_compress.isChecked(),
+            max_width=self.settings_max_width.value(),
+        )
 
         config = RewriteConfig(
             api_key=api_key, api_base=api_base, model=model,
@@ -1578,7 +907,11 @@ class MainWindow(QMainWindow):
 
         self._rewrite_gen += 1
         gen = self._rewrite_gen
+        self._begin_stream()
         self.rewrite_worker = RewriteWorker(self.ai_rewriter, content)
+        self.rewrite_worker.chunk.connect(
+            lambda t, g=gen: self._on_rewrite_chunk(t, g)
+        )
         self.rewrite_worker.finished.connect(
             lambda result, g=gen: self._on_rewrite_finished(result, g)
         )
@@ -1656,7 +989,11 @@ class MainWindow(QMainWindow):
 
         self._rewrite_gen += 1
         gen = self._rewrite_gen
+        self._begin_stream()
         self.rewrite_worker = RewriteWorker(self.ai_rewriter, content)
+        self.rewrite_worker.chunk.connect(
+            lambda t, g=gen: self._on_rewrite_chunk(t, g)
+        )
         self.rewrite_worker.finished.connect(
             lambda result, g=gen: self._on_selection_rewritten(result, full_text, start, end, g)
         )
@@ -1707,11 +1044,33 @@ class MainWindow(QMainWindow):
         self.rewrite_worker.wait(5000)
         self.log("⏹️ AI 改写已取消")
 
+    def _begin_stream(self):
+        self._stream_buffer = ""
+        self._last_stream_paint = 0.0
+        self.rewritten_view.clear()
+        self.content_tabs.setTabEnabled(2, True)
+        self.content_tabs.setCurrentIndex(2)
+
+    def _on_rewrite_chunk(self, text, gen):
+        if gen != self._rewrite_gen:
+            return
+        self._stream_buffer += text
+        now = time.monotonic()
+        if now - self._last_stream_paint >= 0.08:
+            self._last_stream_paint = now
+            self._flush_stream()
+
+    def _flush_stream(self):
+        self.rewritten_view.setPlainText(self._stream_buffer)
+        sb = self.rewritten_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def _on_rewrite_finished(self, result, gen):
         if gen != self._rewrite_gen:
             return
         self.rewritten_content = result
-        self.rewritten_view.setText(result)
+        self._stream_buffer = result
+        self._flush_stream()
         self.content_tabs.setTabEnabled(2, True)
 
         self.preview_stats.setText("📝 改写后预览")
@@ -1996,13 +1355,32 @@ class MainWindow(QMainWindow):
         return img_re.sub(_replace, markdown)
 
 
+class MetaWorker(QThread):
+    done = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, rewriter, content):
+        super().__init__()
+        self.rewriter = rewriter
+        self.content = content
+
+    def run(self):
+        try:
+            self.done.emit(self.rewriter.generate_meta(self.content))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class PublishDialog(QDialog):
     def __init__(self, parent, content: str, default_title: str):
         super().__init__(parent)
         self.parent = parent
         self.content = content
+        self._settings = parent.settings
+        self._results = {}
+        self._pub_args = None
         self.setWindowTitle("多平台发布管理器")
-        self.resize(680, 560)
+        self.resize(720, 660)
 
         layout = QVBoxLayout(self)
 
@@ -2017,6 +1395,7 @@ class PublishDialog(QDialog):
             cb = QCheckBox(f"{p.name}")
             cb.setChecked(p.is_logged_in())
             cb.setEnabled(p.is_logged_in())
+            cb.stateChanged.connect(self._on_platform_toggle)
             left_layout.addWidget(cb)
             self._platform_checks[p.name] = cb
 
@@ -2052,13 +1431,23 @@ class PublishDialog(QDialog):
         self.parallel_check = QCheckBox("并行发布（串行默认）")
         right_layout.addRow(self.parallel_check)
 
+        self.meta_btn = QPushButton("AI 生成标题/标签")
+        self.meta_btn.setObjectName("secondaryBtn")
+        self.meta_btn.clicked.connect(self._generate_meta)
+        right_layout.addRow(self.meta_btn)
+
         top_layout.addWidget(left_widget, 1)
         top_layout.addWidget(right_widget, 2)
         layout.addLayout(top_layout)
 
+        layout.addWidget(QLabel("发布结果:"))
+        self.results_layout = QVBoxLayout()
+        self.results_layout.setSpacing(4)
+        layout.addLayout(self.results_layout)
+
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(150)
+        self.log_view.setMaximumHeight(130)
         layout.addWidget(QLabel("发布日志:"))
         layout.addWidget(self.log_view)
 
@@ -2073,99 +1462,236 @@ class PublishDialog(QDialog):
         btn_layout.addWidget(self.close_btn)
         layout.addLayout(btn_layout)
 
+        self._load_presets()
+
+    # ---- presets ----
+    def _apply_preset(self, preset):
+        if not preset:
+            return
+        if preset.get("tags"):
+            self.tags_edit.setText(preset["tags"])
+        if preset.get("categories"):
+            self.categories_edit.setText(preset["categories"])
+        t = preset.get("type")
+        if t:
+            idx = self.type_combo.findText(t)
+            if idx >= 0:
+                self.type_combo.setCurrentIndex(idx)
+
+    def _load_presets(self):
+        presets = self._settings.get("publish_presets", {}) or {}
+        for name, cb in self._platform_checks.items():
+            if cb.isChecked():
+                self._apply_preset(presets.get(name, {}))
+                break
+
+    def _save_presets(self, names):
+        presets = dict(self._settings.get("publish_presets", {}) or {})
+        entry = {
+            "tags": self.tags_edit.text().strip(),
+            "categories": self.categories_edit.text().strip(),
+            "type": self.type_combo.currentText(),
+        }
+        for name in names:
+            presets[name] = entry
+        self._settings.set("publish_presets", presets)
+
+    def _on_platform_toggle(self):
+        checked = [n for n, cb in self._platform_checks.items() if cb.isChecked()]
+        if len(checked) == 1:
+            presets = self._settings.get("publish_presets", {}) or {}
+            self._apply_preset(presets.get(checked[0], {}))
+
+    # ---- results ----
+    def _reset_results(self, names):
+        while self.results_layout.count():
+            item = self.results_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._results.clear()
+        for name in names:
+            self._add_result_row(name)
+
+    def _add_result_row(self, name):
+        row = QFrame()
+        row.setObjectName("resultRow")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(10, 4, 10, 4)
+        status = QLabel(f"⏳ {name}: 等待发布")
+        rl.addWidget(status, 1)
+        link = QPushButton("打开")
+        link.setObjectName("draftBtn")
+        link.setEnabled(False)
+        link.clicked.connect(lambda _=False, n=name: self._open_result(n))
+        rl.addWidget(link)
+        retry = QPushButton("重试")
+        retry.setObjectName("draftBtn")
+        retry.setEnabled(False)
+        retry.clicked.connect(lambda _=False, n=name: self._retry(n))
+        rl.addWidget(retry)
+        self.results_layout.addWidget(row)
+        self._results[name] = {
+            "status": status, "link": link, "retry": retry, "url": ""
+        }
+
+    def _set_result(self, name, result):
+        row = self._results.get(name)
+        if not row:
+            return
+        if result.success:
+            row["status"].setText(f"✅ {name}: 发布成功")
+            row["url"] = result.url or ""
+            row["link"].setEnabled(bool(result.url))
+            row["retry"].setEnabled(True)
+        else:
+            row["status"].setText(f"❌ {name}: {result.error[:60]}")
+            row["retry"].setEnabled(True)
+
+    def _open_result(self, name):
+        row = self._results.get(name)
+        if row and row["url"]:
+            QDesktopServices.openUrl(QUrl(row["url"]))
+
+    # ---- publishing ----
     def _log(self, msg: str):
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_view.append(f"[{ts}] {msg}")
         QApplication.processEvents()
 
-    def _do_publish(self):
+    def _collect_args(self):
         title = self.title_edit.text().strip()
         if not title:
             QMessageBox.warning(self, "提示", "请输入标题")
-            return
-
+            return None
         content = self.content
-        tags = self.tags_edit.text().strip()
-        categories = self.categories_edit.text().strip()
-        type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
-        article_type = type_map.get(self.type_combo.currentText(), "original")
-        is_draft = self.draft_check.isChecked()
-        use_base64 = self.base64_check.isChecked()
-
-        if use_base64:
+        if self.base64_check.isChecked():
             self._log("🖼️ 正在将图片转为 base64...")
             QApplication.processEvents()
             content = self.parent._embed_images_base64(content)
+        type_map = {"原创": "original", "转载": "reprint", "翻译": "translate"}
+        return {
+            "title": title,
+            "content": content,
+            "tags": self.tags_edit.text().strip(),
+            "categories": self.categories_edit.text().strip(),
+            "article_type": type_map.get(self.type_combo.currentText(), "original"),
+            "draft": self.draft_check.isChecked(),
+        }
 
-        checked_platforms = [
-            name for name, cb in self._platform_checks.items()
-            if cb.isChecked()
-        ]
-        if not checked_platforms:
+    def _do_publish(self):
+        args = self._collect_args()
+        if not args:
+            return
+        names = [n for n, cb in self._platform_checks.items() if cb.isChecked()]
+        if not names:
             QMessageBox.warning(self, "提示", "请至少选择一个已登录的平台")
             return
+        self._pub_args = args
+        self._save_presets(names)
+        self._reset_results(names)
+        self._publish_platforms(names, self.parallel_check.isChecked())
 
-        parallel = self.parallel_check.isChecked()
+    def _retry(self, name):
+        if not self._pub_args:
+            return
+        if name not in self._results:
+            self._add_result_row(name)
+        self._results[name]["status"].setText(f"⏳ {name}: 重试中...")
+        self._results[name]["retry"].setEnabled(False)
+        self._publish_platforms([name], parallel=False)
+
+    def _publish_one(self, name):
+        args = self._pub_args
+        p = get_publisher(name)
+        adapted = Exporter.adapt_for(name, args["content"])
+        return p.publish(
+            title=args["title"], content=adapted,
+            tags=args["tags"], categories=args["categories"],
+            article_type=args["article_type"], draft=args["draft"],
+        )
+
+    def _handle_result(self, name, result):
+        if result.success:
+            self._log(f"✅ {name} 发布成功: {result.url}")
+            for w in getattr(result, "warnings", []) or []:
+                self._log(f"⚠️ {name} 图片未转存: {w}")
+        else:
+            self._log(f"❌ {name} 发布失败: {result.error}")
+        self._set_result(name, result)
+
+    def _publish_platforms(self, names, parallel):
+        self.publish_btn.setEnabled(False)
         success_count = 0
         fail_count = 0
 
-        self.publish_btn.setEnabled(False)
-
-        if parallel:
+        if parallel and len(names) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             futures = {}
-            with ThreadPoolExecutor(max_workers=len(checked_platforms)) as executor:
-                for name in checked_platforms:
-                    p = get_publisher(name)
-                    adapted = Exporter.adapt_for(name, content)
+            with ThreadPoolExecutor(max_workers=len(names)) as executor:
+                for name in names:
                     self._log(f"📤 正在发布到 {name}...")
-                    future = executor.submit(
-                        p.publish, title=title, content=adapted,
-                        tags=tags, categories=categories,
-                        article_type=article_type, draft=is_draft,
-                    )
-                    futures[future] = name
-
+                    futures[executor.submit(self._publish_one, name)] = name
                 for future in as_completed(futures):
                     name = futures[future]
                     try:
                         result = future.result()
-                        if result.success:
-                            success_count += 1
-                            self._log(f"✅ {name} 发布成功: {result.url}")
-                        else:
-                            fail_count += 1
-                            self._log(f"❌ {name} 发布失败: {result.error}")
                     except Exception as e:
+                        result = PublishResult(False, name, error=str(e))
+                    if result.success:
+                        success_count += 1
+                    else:
                         fail_count += 1
-                        self._log(f"❌ {name} 异常: {e}")
+                    self._handle_result(name, result)
         else:
-            for name in checked_platforms:
-                p = get_publisher(name)
-                adapted = Exporter.adapt_for(name, content)
+            for name in names:
                 self._log(f"📤 正在发布到 {name}...")
                 QApplication.processEvents()
                 try:
-                    result = p.publish(
-                        title=title, content=adapted,
-                        tags=tags, categories=categories,
-                        article_type=article_type, draft=is_draft,
-                    )
-                    if result.success:
-                        success_count += 1
-                        self._log(f"✅ {name} 发布成功: {result.url}")
-                    else:
-                        fail_count += 1
-                        self._log(f"❌ {name} 发布失败: {result.error}")
+                    result = self._publish_one(name)
                 except Exception as e:
+                    result = PublishResult(False, name, error=str(e))
+                if result.success:
+                    success_count += 1
+                else:
                     fail_count += 1
-                    self._log(f"❌ {name} 异常: {e}")
+                self._handle_result(name, result)
                 QApplication.processEvents()
 
         self.publish_btn.setEnabled(True)
-        summary = f"✅ {success_count} 成功，❌ {fail_count} 失败"
-        QMessageBox.information(self, "发布完成", summary)
-        self._log(f"📊 发布完成: {summary}")
+        if len(names) > 1:
+            summary = f"✅ {success_count} 成功，❌ {fail_count} 失败"
+            self._log(f"📊 发布完成: {summary}")
+            QMessageBox.information(self, "发布完成", summary)
         if success_count > 0:
             self.parent.status_label.setText("就绪")
+
+    # ---- AI meta ----
+    def _generate_meta(self):
+        rewriter = getattr(self.parent, "ai_rewriter", None)
+        if not rewriter or not rewriter.config.api_key:
+            QMessageBox.warning(self, "提示", "请先在设置中配置 API Key")
+            return
+        self.meta_btn.setEnabled(False)
+        self.meta_btn.setText("生成中...")
+        self._meta_worker = MetaWorker(rewriter, self.content)
+        self._meta_worker.done.connect(self._on_meta_done)
+        self._meta_worker.error.connect(self._on_meta_error)
+        self._meta_worker.start()
+
+    def _on_meta_done(self, meta):
+        if meta.get("title"):
+            self.title_edit.setText(meta["title"])
+        if meta.get("tags"):
+            self.tags_edit.setText(meta["tags"])
+        if meta.get("summary"):
+            self._log(f"📝 摘要: {meta['summary']}")
+        self.meta_btn.setEnabled(True)
+        self.meta_btn.setText("AI 生成标题/标签")
+        self._log("✅ 已生成标题与标签")
+
+    def _on_meta_error(self, msg):
+        self.meta_btn.setEnabled(True)
+        self.meta_btn.setText("AI 生成标题/标签")
+        self._log(f"❌ 生成失败: {msg}")

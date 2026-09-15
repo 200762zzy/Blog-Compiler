@@ -4,6 +4,8 @@ from pathlib import Path
 
 import httpx
 
+import http_client
+
 from publishers.base import BasePublisher, PublishResult
 
 
@@ -83,7 +85,7 @@ class JuejinPublisher(BasePublisher):
             "cookie": cookie_str,
         }
 
-        with httpx.Client(timeout=15.0) as client:
+        with http_client.client(timeout=15.0) as client:
             resp = client.get(
                 "https://api.juejin.cn/imagex/gen_token",
                 params={"client": "web"},
@@ -95,7 +97,7 @@ class JuejinPublisher(BasePublisher):
         if not token:
             raise Exception("获取上传 token 失败")
 
-        with httpx.Client(timeout=15.0) as client:
+        with http_client.client(timeout=15.0) as client:
             apply_resp = client.get(
                 "https://imagex.bytedanceapi.com/",
                 params={
@@ -120,7 +122,7 @@ class JuejinPublisher(BasePublisher):
         file_bytes = Path(local_path).read_bytes()
         mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
 
-        with httpx.Client(timeout=60.0) as client:
+        with http_client.client(timeout=60.0) as client:
             put_resp = client.put(
                 f"https://{upload_host}/{store_uri}",
                 content=file_bytes,
@@ -128,7 +130,7 @@ class JuejinPublisher(BasePublisher):
             )
             put_resp.raise_for_status()
 
-        with httpx.Client(timeout=15.0) as client:
+        with http_client.client(timeout=15.0) as client:
             commit_resp = client.post(
                 f"https://{upload_host}/",
                 params={
@@ -198,7 +200,7 @@ class JuejinPublisher(BasePublisher):
                 "theme_ids": [],
             }
 
-            with httpx.Client(timeout=30.0) as client:
+            with http_client.client(timeout=30.0) as client:
                 draft_resp = client.post(_DRAFT_URL, headers=headers, json=draft_payload)
 
             if draft_resp.status_code != 200:
@@ -222,7 +224,7 @@ class JuejinPublisher(BasePublisher):
                 "theme_ids": [],
             }
 
-            with httpx.Client(timeout=30.0) as client:
+            with http_client.client(timeout=30.0) as client:
                 pub_resp = client.post(_PUBLISH_URL, headers=headers, json=publish_payload)
 
             if pub_resp.status_code != 200:

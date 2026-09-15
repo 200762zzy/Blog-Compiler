@@ -3,7 +3,20 @@ from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtSvg import QSvgRenderer
 
 
-def _svg_icon(svg: str, size: int = 20) -> QIcon:
+DEFAULT_COLOR = "#9AA7B4"
+_current_color = DEFAULT_COLOR
+
+
+def set_color(color: str):
+    global _current_color
+    if color and color != _current_color:
+        _current_color = color
+        icons.clear()
+
+
+def _svg_icon(svg: str, size: int = 20, color: str | None = None) -> QIcon:
+    color = color or _current_color
+    svg = svg.replace("currentColor", color)
     data = QByteArray(svg.encode("utf-8"))
     renderer = QSvgRenderer(data)
     pixmap = QPixmap(size, size)
@@ -55,7 +68,12 @@ PUBLISH_SVG = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 </svg>"""
 
 LOGO_SVG = """<svg viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="6" fill="#06B6D4"/>
+  <defs>
+    <linearGradient id="blogc" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46E5"/><stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#blogc)"/>
   <text x="16" y="22" text-anchor="middle" fill="white" font-size="18" font-weight="bold" font-family="sans-serif">B</text>
 </svg>"""
 
@@ -67,8 +85,8 @@ CANCEL_SVG = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 icons = {}
 
 
-def get(name: str, size: int = 20) -> QIcon:
-    key = f"{name}_{size}"
+def get(name: str, size: int = 20, color: str | None = None) -> QIcon:
+    key = f"{name}_{size}_{color or _current_color}"
     if key not in icons:
         svg_map = {
             "add": ADD_SVG, "clear": CLEAR_SVG, "dark": DARK_SVG, "light": LIGHT_SVG,
@@ -78,7 +96,7 @@ def get(name: str, size: int = 20) -> QIcon:
         }
         svg = svg_map.get(name, "")
         if svg:
-            icons[key] = _svg_icon(svg, size)
+            icons[key] = _svg_icon(svg, size, color)
         else:
             from PySide6.QtGui import QIcon as _QIcon
             icons[key] = _QIcon()

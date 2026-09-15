@@ -22,6 +22,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+import http_client
+
 from image_handler import IMAGE_PATTERN
 
 _BIZ = "https://bizapi.csdn.net"
@@ -101,7 +103,7 @@ def _fetch_signature(client: httpx.Client, ext: str) -> dict:
 
 def upload_image_bytes(cookies: dict, image_data: bytes, ext: str, retries: int = 1) -> str:
     """Upload raw bytes to CSDN CDN and return the img-blog.csdnimg.cn URL."""
-    client = httpx.Client(cookies=_cookie_dict(cookies), timeout=60.0, follow_redirects=True)
+    client = http_client.client(cookies=_cookie_dict(cookies), timeout=60.0, follow_redirects=True)
     last_error = ""
     try:
         for attempt in range(1 + retries):
@@ -125,7 +127,7 @@ def upload_image_bytes(cookies: dict, image_data: bytes, ext: str, retries: int 
             }
             files = {"file": (f"image.{ext}", image_data, _MIME.get(ext, "image/png"))}
 
-            with httpx.Client(timeout=60.0) as obs:
+            with http_client.client(timeout=60.0) as obs:
                 resp = obs.post(
                     info["host"],
                     data=form,
@@ -181,7 +183,7 @@ def process_markdown_images(content: str, cookies: dict):
                 with open(target, "rb") as f:
                     image_data = f.read()
             elif target.startswith(("http://", "https://")):
-                with httpx.Client(timeout=60.0, follow_redirects=True) as dl:
+                with http_client.client(timeout=60.0, follow_redirects=True) as dl:
                     resp = dl.get(
                         target,
                         headers={"User-Agent": _USER_AGENT, "Referer": "https://img.scdn.io/"},

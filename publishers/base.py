@@ -9,6 +9,7 @@ class PublishResult:
     platform: str
     url: str = ""
     error: str = ""
+    warnings: list[str] = field(default_factory=list)
 
 
 class BasePublisher(ABC):

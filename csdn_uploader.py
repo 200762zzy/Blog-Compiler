@@ -16,6 +16,8 @@ from pathlib import Path
 
 import httpx
 
+import http_client
+
 
 CSDN_UPLOAD_URL = "https://blog.csdn.net/phoenix/upload"
 SMMS_UPLOAD_URL = "https://sm.ms/api/v2/upload"
@@ -35,7 +37,7 @@ class CSDNUploader:
                 k: v if isinstance(v, str) else v.get("value", str(v))
                 for k, v in self.cookies.items()
             }
-            self._client = httpx.Client(
+            self._client = http_client.client(
                 cookies=cookie_dict,
                 timeout=60.0,
                 follow_redirects=True
@@ -125,7 +127,7 @@ class CSDNUploader:
 
         with open(local_path, "rb") as f:
             files = {"smfile": (path.name, f, mime_type)}
-            resp = httpx.post(
+            resp = http_client.post(
                 SMMS_UPLOAD_URL, files=files, headers=headers, timeout=60.0
             )
 
