@@ -18,6 +18,14 @@ def test_publish_result_warnings_are_independent():
     assert b.warnings == []
 
 
+def test_publish_result_article_id_default():
+    assert PublishResult(True, "CSDN").article_id == ""
+
+
+def test_publish_result_article_id_set():
+    assert PublishResult(True, "CSDN", article_id="123").article_id == "123"
+
+
 def test_adapt_for_csdn_adds_code_language():
     out = Exporter.adapt_for("CSDN", "```\ncode\n```")
     assert "```text" in out

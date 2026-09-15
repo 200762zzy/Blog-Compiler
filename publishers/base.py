@@ -10,6 +10,7 @@ class PublishResult:
     url: str = ""
     error: str = ""
     warnings: list[str] = field(default_factory=list)
+    article_id: str = ""
 
 
 class BasePublisher(ABC):

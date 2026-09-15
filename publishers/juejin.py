@@ -235,9 +235,11 @@ class JuejinPublisher(BasePublisher):
                 msg = pub_data.get("err_msg", "未知错误")
                 return PublishResult(False, self.name, error=f"发布失败: {msg}")
 
-            article_id = pub_data.get("data", {}).get("article_id", "")
+            article_id = str(pub_data.get("data", {}).get("article_id", "") or "")
+            if article_id == "0":
+                article_id = ""
             url = f"https://juejin.cn/post/{article_id}" if article_id else ""
-            return PublishResult(True, self.name, url=url)
+            return PublishResult(True, self.name, url=url, article_id=article_id)
 
         except httpx.RequestError as e:
             return PublishResult(False, self.name, error=f"网络错误: {e}")

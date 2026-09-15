@@ -1698,6 +1698,12 @@ class PublishDialog(QDialog):
         self.parallel_check = QCheckBox("并行发布（串行默认）")
         right_layout.addRow(self.parallel_check)
 
+        self.update_check = QCheckBox("更新已发布文章（CSDN，标题匹配时）")
+        self.update_check.setToolTip(
+            "勾选后，若发布历史中存在同标题的 CSDN 文章，则更新该文章而非新建"
+        )
+        right_layout.addRow(self.update_check)
+
         self.meta_btn = QPushButton("AI 生成标题/标签")
         self.meta_btn.setObjectName("secondaryBtn")
         self.meta_btn.clicked.connect(self._generate_meta)
@@ -1869,14 +1875,31 @@ class PublishDialog(QDialog):
         self._results[name]["retry"].setEnabled(False)
         self._publish_platforms([name], parallel=False)
 
+    def _find_article_id(self, name, title):
+        history = self._settings.get("publish_history", []) or []
+        for rec in history:
+            if (
+                rec.get("platform") == name
+                and rec.get("title") == title
+                and rec.get("article_id")
+            ):
+                return rec["article_id"]
+        return ""
+
     def _publish_one(self, name):
         args = self._pub_args
         p = get_publisher(name)
         adapted = Exporter.adapt_for(name, args["content"])
+        article_id = ""
+        if self.update_check.isChecked():
+            article_id = self._find_article_id(name, args["title"])
+            if article_id:
+                self._log(f"♻️ {name} 将更新已发布文章 (id={article_id})")
         return p.publish(
             title=args["title"], content=adapted,
             tags=args["tags"], categories=args["categories"],
             article_type=args["article_type"], draft=args["draft"],
+            article_id=article_id,
         )
 
     def _handle_result(self, name, result):
@@ -1896,6 +1919,7 @@ class PublishDialog(QDialog):
             "platform": name,
             "title": self._pub_args["title"] if self._pub_args else "",
             "url": result.url or "",
+            "article_id": getattr(result, "article_id", "") or "",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         })
         self._settings.set("publish_history", history[:50])

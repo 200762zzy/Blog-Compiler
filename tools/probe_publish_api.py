@@ -122,9 +122,12 @@ def probe_csdn(settings):
     print(">>> 草稿链接:", url or "(无)")
 
     if aid:
-        print("\n[2] 尝试更新该草稿 (articleId + is_new=0) ...")
+        print("\n[2] 尝试更新该草稿 (id + is_new=0) ...")
         upd = dict(base)
-        upd["articleId"] = aid
+        try:
+            upd["id"] = int(aid)
+        except (TypeError, ValueError):
+            upd["id"] = aid
         upd["is_new"] = 0
         resp2 = save(upd)
         print("HTTP", resp2.status_code)
@@ -132,7 +135,7 @@ def probe_csdn(settings):
             print(_pretty(resp2.json()))
         except Exception:
             print("非 JSON 响应:", resp2.text[:500])
-        print("\n若 [2] 返回成功且未新建文章，则更新接口可用。")
+        print("\n若 [2] 返回的 id 与 [1] 相同，则更新成功（未新建文章）。")
     else:
         print("\n未拿到文章 ID，无法验证更新；请把上面的响应发给我。")
 

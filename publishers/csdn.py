@@ -83,6 +83,7 @@ class CsdnPublisher(BasePublisher):
         categories = kwargs.get("categories", "")
         article_type = kwargs.get("article_type", "original")
         draft = kwargs.get("draft", False)
+        article_id = str(kwargs.get("article_id", "") or "")
 
         nonce = str(uuid.uuid4())
         parsed = urlparse(_SAVE_URL)
@@ -121,10 +122,15 @@ class CsdnPublisher(BasePublisher):
             "source": "pc_mdeditor",
             "cover_images": [],
             "cover_type": 0,
-            "is_new": 1,
+            "is_new": 0 if article_id else 1,
             "vote_id": 0,
             "pubStatus": "draft" if draft else "publish",
         }
+        if article_id:
+            try:
+                payload["id"] = int(article_id)
+            except ValueError:
+                payload["id"] = article_id
 
         try:
             with http_client.client(cookies=self._cookies, timeout=30.0) as client:
@@ -144,7 +150,10 @@ class CsdnPublisher(BasePublisher):
                 return PublishResult(False, self.name, error=msg)
 
             url = data.get("data", {}).get("url", "")
-            return PublishResult(True, self.name, url=url, warnings=image_warnings)
+            aid = str(data.get("data", {}).get("id", "") or "")
+            return PublishResult(
+                True, self.name, url=url, warnings=image_warnings, article_id=aid
+            )
 
         except httpx.RequestError as e:
             return PublishResult(False, self.name, error=f"网络错误: {e}")
