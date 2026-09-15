@@ -9,6 +9,7 @@
 [![GitHub license](https://img.shields.io/github/license/200762zzy/Blog-Compiler?style=flat-square)](https://github.com/200762zzy/Blog-Compiler/blob/main/LICENSE)
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)](https://github.com/200762zzy/Blog-Compiler/releases)
 [![Platforms](https://img.shields.io/badge/Platform-CSDN%20|%20掘金%20|%20博客园-6A5ACD?style=flat-square)](https://github.com/200762zzy/Blog-Compiler/releases)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://makeapullrequest.com)
 
 </div>
 
@@ -180,6 +181,18 @@ py build.py
 ```
 
 > 注：Windows 上请使用 `py` 而非 `python`，避免触发 Microsoft Store 的 Python 占位符。
+
+---
+
+## 🤝 参与贡献
+
+我们欢迎任何形式的贡献——修 Bug、加功能、补文档、提建议都算！
+
+- 想动手改代码？先看 [CONTRIBUTING.md](CONTRIBUTING.md)，里面有环境搭建、项目架构和 PR 流程
+- 第一次参与开源？从标记了 [`good first issue`](https://github.com/200762zzy/Blog-Compiler/labels/good%20first%20issue) 的任务入手
+- 发现了 Bug 或有想法？欢迎[提 Issue](https://github.com/200762zzy/Blog-Compiler/issues/new/choose)
+
+如果这个项目对你有帮助，欢迎点个 ⭐ Star，也欢迎分享给更多人。
 
 ---
 
