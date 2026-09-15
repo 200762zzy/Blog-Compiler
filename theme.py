@@ -129,6 +129,35 @@ _TEMPLATE = Template("""
         background-color: $accent_soft;
         color: $accent;
     }
+    QFrame#navRail {
+        background-color: $bg_panel;
+        border-right: 1px solid $border;
+    }
+    QPushButton#railBtn {
+        background-color: transparent;
+        border: none;
+        border-radius: $radius_sm;
+        padding: 8px;
+        min-width: 36px;
+        min-height: 36px;
+    }
+    QPushButton#railBtn:hover {
+        background-color: $bg_hover;
+    }
+    QPushButton#railBtn:checked {
+        background-color: $accent_soft;
+    }
+    QLabel#breadcrumb {
+        color: $text_muted;
+        font-size: 12px;
+    }
+    QLineEdit#fileSearch {
+        background-color: $bg_input;
+        border: 1px solid $border;
+        border-radius: $radius_sm;
+        padding: 4px 10px;
+        font-size: 12px;
+    }
 
     QFrame#card {
         background-color: $bg_card;

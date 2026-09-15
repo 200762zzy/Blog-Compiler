@@ -383,11 +383,18 @@ class MainWindow(QMainWindow):
 
         self.file_stack = QStackedWidget()
         self.file_stack.setObjectName("fileStack")
-        self.file_stack.setMinimumWidth(200)
-        self.file_stack.setMaximumWidth(350)
         self.file_stack.addWidget(self.file_empty)
         self.file_stack.addWidget(self.file_list)
         self.file_stack.setCurrentIndex(0)
+
+        self.file_panel = QWidget()
+        self.file_panel.setObjectName("filePanel")
+        fp_layout = QVBoxLayout(self.file_panel)
+        fp_layout.setContentsMargins(0, 0, 0, 0)
+        fp_layout.setSpacing(0)
+        fp_layout.addWidget(self.file_stack)
+        self.file_panel.setMinimumWidth(200)
+        self.file_panel.setMaximumWidth(350)
 
         self.content_tabs = QTabWidget()
         self.content_tabs.setObjectName("contentTabs")
@@ -551,14 +558,30 @@ class MainWindow(QMainWindow):
 
         right_layout.addStretch()
 
-        splitter.addWidget(self.file_stack)
+        self.inspector = right_panel
+        self.inspector.setMinimumWidth(240)
+        self.inspector.setMaximumWidth(420)
+
+        splitter.addWidget(self.file_panel)
         splitter.addWidget(self.content_tabs)
-        splitter.addWidget(right_panel)
+        splitter.addWidget(self.inspector)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
         splitter.setStretchFactor(2, 1)
+        self.splitter = splitter
 
-        main_layout.addWidget(splitter, 1)
+        self._build_nav_rail()
+
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        body_layout.addWidget(self.nav_rail)
+        body_layout.addWidget(splitter, 1)
+
+        main_layout.addWidget(body, 1)
+
+        self.inspector.setVisible(False)
 
         self.status_bar = QStatusBar()
         self.status_bar.setObjectName("statusBar")
@@ -582,6 +605,59 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+K"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+,"), self, self._show_settings)
         QShortcut(QKeySequence("Ctrl+P"), self, self._open_publish_dialog)
+
+    def _build_nav_rail(self):
+        self.nav_rail = QFrame()
+        self.nav_rail.setObjectName("navRail")
+        self.nav_rail.setFixedWidth(52)
+        rl = QVBoxLayout(self.nav_rail)
+        rl.setContentsMargins(6, 10, 6, 10)
+        rl.setSpacing(6)
+
+        def _rail(icon_name, tooltip, slot, checkable=False, checked=False):
+            b = QPushButton()
+            b.setIcon(get_icon(icon_name))
+            b.setObjectName("railBtn")
+            b.setToolTip(tooltip)
+            b.setCheckable(checkable)
+            if checkable:
+                b.setChecked(checked)
+            b.clicked.connect(slot)
+            rl.addWidget(b)
+            return b
+
+        self.rail_file = _rail(
+            "file", "文件列表", self._toggle_file_panel, checkable=True, checked=True
+        )
+        self.rail_rewrite = _rail(
+            "ai", "改写检查器", self._toggle_inspector, checkable=True
+        )
+        self.rail_image = _rail(
+            "image", "图片处理", self._toggle_inspector, checkable=True
+        )
+        self.rail_history = _rail("history", "发布历史", self._show_publish_history)
+        self.rail_publish = _rail("publish", "多平台发布", self._open_publish_dialog)
+        rl.addStretch()
+        self.rail_settings = _rail("settings", "设置", self._show_settings)
+
+    def _toggle_file_panel(self):
+        self.file_panel.setVisible(self.rail_file.isChecked())
+
+    def _toggle_inspector(self):
+        sender = self.sender()
+        if sender is self.rail_image:
+            visible = self.rail_image.isChecked()
+        else:
+            visible = self.rail_rewrite.isChecked()
+        self.inspector.setVisible(visible)
+        self.rail_rewrite.setChecked(visible)
+        self.rail_image.setChecked(visible)
+
+    def _filter_files(self, text):
+        text = text.strip().lower()
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            item.setHidden(bool(text) and text not in item.text().lower())
 
     def _show_command_palette(self):
         commands = [
@@ -635,7 +711,12 @@ class MainWindow(QMainWindow):
         title = QLabel("Blog Compiler")
         title.setObjectName("barTitle")
         layout.addWidget(title)
-        layout.addSpacing(16)
+        layout.addSpacing(12)
+
+        self.breadcrumb = QLabel("未选择文件")
+        self.breadcrumb.setObjectName("breadcrumb")
+        layout.addWidget(self.breadcrumb)
+        layout.addSpacing(12)
 
         def _cmd_btn(text, icon_name, slot):
             btn = QPushButton(text)
@@ -649,6 +730,19 @@ class MainWindow(QMainWindow):
         self.action_clear = _cmd_btn("清空", "clear", self._clear_files)
 
         layout.addStretch()
+
+        self.file_search = QLineEdit()
+        self.file_search.setObjectName("fileSearch")
+        self.file_search.setPlaceholderText("搜索文件...")
+        self.file_search.setFixedWidth(150)
+        self.file_search.textChanged.connect(self._filter_files)
+        layout.addWidget(self.file_search)
+
+        self.action_palette = QPushButton("Ctrl+K")
+        self.action_palette.setObjectName("cmdBtn")
+        self.action_palette.setToolTip("命令面板")
+        self.action_palette.clicked.connect(self._show_command_palette)
+        layout.addWidget(self.action_palette)
 
         self.action_dark = QPushButton()
         self.action_dark.setIcon(get_icon("dark"))
@@ -694,6 +788,7 @@ class MainWindow(QMainWindow):
         self.current_result = None
         self.rewritten_content = ""
         self.content_tabs.setTabEnabled(2, False)
+        self.breadcrumb.setText("未选择文件")
         self._update_status()
         self.log("已清空文件列表")
 
@@ -718,6 +813,7 @@ class MainWindow(QMainWindow):
 
         self.current_content = content
         self.original_view.setText(content)
+        self.breadcrumb.setText(f"文件 / {Path(filepath).name}")
         result = parse_markdown(content)
         self.current_result = result
 
@@ -793,6 +889,12 @@ class MainWindow(QMainWindow):
             "action_add": ("add", secondary),
             "action_clear": ("clear", secondary),
             "action_settings": ("settings", secondary),
+            "rail_file": ("file", secondary),
+            "rail_rewrite": ("ai", secondary),
+            "rail_image": ("image", secondary),
+            "rail_history": ("history", secondary),
+            "rail_publish": ("publish", secondary),
+            "rail_settings": ("settings", secondary),
         }
         for attr, (name, color) in mapping.items():
             btn = getattr(self, attr, None)
