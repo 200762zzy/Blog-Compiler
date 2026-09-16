@@ -49,6 +49,15 @@ class Settings:
         if "image_max_width" not in self.data:
             self.data["image_max_width"] = 1600
             changed = True
+        if not isinstance(self.data.get("accounts"), dict):
+            self.data["accounts"] = {}
+            changed = True
+        if not isinstance(self.data.get("publish_presets"), dict):
+            self.data["publish_presets"] = {}
+            changed = True
+        if not isinstance(self.data.get("publish_history"), list):
+            self.data["publish_history"] = []
+            changed = True
         if changed:
             self.save()
 

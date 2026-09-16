@@ -176,6 +176,10 @@ _TEMPLATE = Template("""
         letter-spacing: 1px;
         padding-bottom: 4px;
     }
+    QLabel#pubName {
+        font-weight: 600;
+        color: $text_primary;
+    }
 
     QPushButton#primaryBtn {
         background: $grad;

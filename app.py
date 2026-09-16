@@ -182,7 +182,7 @@ class AccountManagerDialog(QDialog):
         self.parent = parent
         self.settings = parent.settings
         self.setWindowTitle("账号管理")
-        self.resize(600, 430)
+        self.resize(660, 470)
 
         layout = QVBoxLayout(self)
         tip = QLabel("为每个平台保存多个账号，一键切换（登录状态会随账号切换）。")
@@ -194,7 +194,8 @@ class AccountManagerDialog(QDialog):
             group = QGroupBox(platform)
             gl = QHBoxLayout(group)
             combo = QComboBox()
-            combo.setMinimumWidth(200)
+            combo.setMinimumWidth(240)
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
             self._combos[platform] = combo
             gl.addWidget(combo, 1)
 
@@ -224,10 +225,10 @@ class AccountManagerDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _accounts(self, platform):
-        return list(self.settings.get("accounts", {}).get(platform, []))
+        return list((self.settings.get("accounts") or {}).get(platform, []))
 
     def _set_accounts(self, platform, items):
-        accounts = dict(self.settings.get("accounts", {}) or {})
+        accounts = dict(self.settings.get("accounts") or {})
         accounts[platform] = items
         self.settings.set("accounts", accounts)
 
@@ -650,28 +651,35 @@ class MainWindow(QMainWindow):
         self._pub_status_labels = {}
         self._pub_login_btns = {}
         for p in get_publishers():
-            row = QHBoxLayout()
             status = QLabel("❌ 未登录")
             status.setObjectName(f"{p.name}Status")
             self._pub_status_labels[p.name] = status
-            row.addWidget(QLabel(f"{p.name}:"))
-            row.addWidget(status)
 
+            head = QHBoxLayout()
+            head.setSpacing(6)
+            name_label = QLabel(f"{p.name}")
+            name_label.setObjectName("pubName")
+            head.addWidget(name_label)
+            head.addWidget(status)
+            head.addStretch()
+            cl_pub.addLayout(head)
+
+            btns = QHBoxLayout()
+            btns.setSpacing(6)
             login_btn = QPushButton("登录")
             login_btn.setObjectName("secondaryBtn")
             login_btn.clicked.connect(lambda checked, name=p.name: self._publisher_login(name))
             self._pub_login_btns[p.name] = login_btn
-            row.addWidget(login_btn)
+            btns.addWidget(login_btn, 1)
 
-            acct_btn = QPushButton("账号")
+            acct_btn = QPushButton("账号管理")
             acct_btn.setObjectName("draftBtn")
             acct_btn.setToolTip("多账号管理")
             acct_btn.clicked.connect(
                 lambda checked, name=p.name: self._show_account_manager(name)
             )
-            row.addWidget(acct_btn)
-
-            cl_pub.addLayout(row)
+            btns.addWidget(acct_btn, 1)
+            cl_pub.addLayout(btns)
 
         self.btn_multi_publish = QPushButton(" 多平台发布")
         self.btn_multi_publish.setIcon(get_icon("publish"))
