@@ -169,6 +169,137 @@ class PublishHistoryDialog(QDialog):
         self._populate([])
 
 
+ACCOUNT_KEYS = {
+    "CSDN": ["csdn_cookies"],
+    "掘金": ["juejin_cookies"],
+    "博客园": ["cnblogs_username", "cnblogs_api_key", "cnblogs_blog_id"],
+}
+
+
+class AccountManagerDialog(QDialog):
+    def __init__(self, parent, focus_platform=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.settings = parent.settings
+        self.setWindowTitle("账号管理")
+        self.resize(600, 430)
+
+        layout = QVBoxLayout(self)
+        tip = QLabel("为每个平台保存多个账号，一键切换（登录状态会随账号切换）。")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        self._combos = {}
+        for platform in ACCOUNT_KEYS:
+            group = QGroupBox(platform)
+            gl = QHBoxLayout(group)
+            combo = QComboBox()
+            combo.setMinimumWidth(200)
+            self._combos[platform] = combo
+            gl.addWidget(combo, 1)
+
+            save_btn = QPushButton("保存当前")
+            save_btn.setObjectName("secondaryBtn")
+            save_btn.clicked.connect(lambda _=False, p=platform: self._save_current(p))
+            gl.addWidget(save_btn)
+
+            switch_btn = QPushButton("切换")
+            switch_btn.setObjectName("secondaryBtn")
+            switch_btn.clicked.connect(lambda _=False, p=platform: self._switch(p))
+            gl.addWidget(switch_btn)
+
+            del_btn = QPushButton("删除")
+            del_btn.setObjectName("draftBtn")
+            del_btn.clicked.connect(lambda _=False, p=platform: self._delete(p))
+            gl.addWidget(del_btn)
+
+            layout.addWidget(group)
+            self._reload(platform)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _accounts(self, platform):
+        return list(self.settings.get("accounts", {}).get(platform, []))
+
+    def _set_accounts(self, platform, items):
+        accounts = dict(self.settings.get("accounts", {}) or {})
+        accounts[platform] = items
+        self.settings.set("accounts", accounts)
+
+    def _reload(self, platform):
+        combo = self._combos[platform]
+        combo.clear()
+        combo.addItem(f"当前登录：{self._active_label(platform)}", -1)
+        for i, acc in enumerate(self._accounts(platform)):
+            combo.addItem(f"已保存：{acc.get('label', f'账号{i + 1}')}", i)
+
+    def _active_label(self, platform):
+        if platform == "博客园":
+            return self.settings.get("cnblogs_username") or "(未配置)"
+        raw = self.settings.get(ACCOUNT_KEYS[platform][0]) or ""
+        if not raw:
+            return "(未登录)"
+        try:
+            import json as _json
+            cookies = _json.loads(raw)
+            for key in ("UserName", "UN", "UserNick"):
+                if cookies.get(key):
+                    return str(cookies[key])
+        except Exception:
+            pass
+        return "(已登录)"
+
+    def _save_current(self, platform):
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+        data = {k: self.settings.get(k) for k in ACCOUNT_KEYS[platform]}
+        if not any(data.values()):
+            QMessageBox.information(self, "提示", f"{platform} 当前未登录，无法保存")
+            return
+        label, ok = QInputDialog.getText(
+            self, "保存账号", "账号备注名:", QLineEdit.Normal, self._active_label(platform)
+        )
+        if not ok or not label.strip():
+            return
+        items = self._accounts(platform)
+        items.append({"label": label.strip(), "data": data})
+        self._set_accounts(platform, items)
+        self._reload(platform)
+        QMessageBox.information(self, "已保存", f"已保存账号：{label.strip()}")
+
+    def _switch(self, platform):
+        idx = self._combos[platform].currentData()
+        items = self._accounts(platform)
+        if idx is None or idx < 0 or idx >= len(items):
+            QMessageBox.information(self, "提示", "请在下拉框中选择一个已保存账号")
+            return
+        data = items[idx].get("data", {})
+        for k in ACCOUNT_KEYS[platform]:
+            self.settings.set(k, data.get(k, ""))
+        init_publishers(self.settings)
+        self.parent._update_all_publisher_status()
+        self.parent.log(f"🔁 已切换 {platform} 账号：{items[idx].get('label')}")
+        self._reload(platform)
+        QMessageBox.information(self, "已切换", f"{platform} 已切换到：{items[idx].get('label')}")
+
+    def _delete(self, platform):
+        idx = self._combos[platform].currentData()
+        items = self._accounts(platform)
+        if idx is None or idx < 0 or idx >= len(items):
+            QMessageBox.information(self, "提示", "请在下拉框中选择一个已保存账号")
+            return
+        label = items[idx].get("label")
+        if QMessageBox.question(self, "确认删除", f"删除账号「{label}」？") != QMessageBox.Yes:
+            return
+        items.pop(idx)
+        self._set_accounts(platform, items)
+        self._reload(platform)
+
+
 class OnboardingDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
@@ -532,6 +663,14 @@ class MainWindow(QMainWindow):
             self._pub_login_btns[p.name] = login_btn
             row.addWidget(login_btn)
 
+            acct_btn = QPushButton("账号")
+            acct_btn.setObjectName("draftBtn")
+            acct_btn.setToolTip("多账号管理")
+            acct_btn.clicked.connect(
+                lambda checked, name=p.name: self._show_account_manager(name)
+            )
+            row.addWidget(acct_btn)
+
             cl_pub.addLayout(row)
 
         self.btn_multi_publish = QPushButton(" 多平台发布")
@@ -668,11 +807,15 @@ class MainWindow(QMainWindow):
             ("复制到剪贴板", self._export_clipboard),
             ("多平台发布", self._open_publish_dialog),
             ("发布历史", self._show_publish_history),
+            ("账号管理", self._show_account_manager),
             ("切换暗色/亮色模式", lambda: self.action_dark.toggle()),
             ("设置", self._show_settings),
         ]
         dlg = CommandPalette(self, commands)
         dlg.exec()
+
+    def _show_account_manager(self, platform=None):
+        AccountManagerDialog(self, platform).exec()
 
     def _show_publish_history(self):
         history = self.settings.get("publish_history", []) or []
