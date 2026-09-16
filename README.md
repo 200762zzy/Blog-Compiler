@@ -99,6 +99,12 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 - 复制到剪贴板，直接粘贴到编辑器
 - 各平台 Markdown 方言自动适配（CSDN 表格/代码块、掘金图片尺寸等）
 
+### 🚀 v3.1.0 新特性
+
+- **登录改用系统 WebView2** — 不再内置 QtWebEngine，安装包从 **236 MB 降到 ~77 MB**，仍保留扫码登录
+- **多账号管理** — 每个平台可保存多个账号，一键切换
+- **登录更稳** — 改为轮询认证 Cookie 判断登录成功，修复掘金扫码后跳系统浏览器、窗口不关闭的问题
+
 ### 🚀 v3.0.1 新特性
 
 - **模型预设更新** — 同步各厂商最新型号（DeepSeek-V4-Pro、Kimi K3、通义 Qwen3.8、智谱 GLM-5.3、OpenAI GPT-5.5 等）
@@ -144,7 +150,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 下载即用
 
-[![Download](https://img.shields.io/badge/Download-v3.0.1-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
+[![Download](https://img.shields.io/badge/Download-v3.1.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
 
 1. 下载 `BlogCompiler.exe`
 2. 双击运行（无需安装）
