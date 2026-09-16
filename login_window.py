@@ -1,5 +1,49 @@
 from PySide6.QtCore import QUrl, Signal, QTimer
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QMessageBox
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox,
+    QPlainTextEdit,
+)
+
+try:
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+    WEBENGINE_AVAILABLE = True
+except Exception:
+    QWebEngineView = None
+    QWebEngineProfile = None
+    WEBENGINE_AVAILABLE = False
+
+
+def parse_cookie_text(text: str) -> dict:
+    """Parse pasted cookies: 'k=v; k2=v2' or a JSON object."""
+    text = (text or "").strip()
+    if not text:
+        return {}
+
+    if text.startswith("{"):
+        try:
+            import json
+            data = json.loads(text)
+            if isinstance(data, dict):
+                out = {}
+                for k, v in data.items():
+                    out[k] = v.get("value", "") if isinstance(v, dict) else str(v)
+                if out:
+                    return out
+        except Exception:
+            pass
+
+    out = {}
+    for part in text.replace("\n", ";").split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip()
+        if k:
+            out[k] = v.strip()
+    return out
 
 
 class PlatformLoginWindow(QDialog):
@@ -15,6 +59,10 @@ class PlatformLoginWindow(QDialog):
         self._login_url = login_url
         self._success_check = success_check
 
+        if not WEBENGINE_AVAILABLE:
+            self._setup_cookie_import()
+            return
+
         layout = QVBoxLayout(self)
 
         hint = QLabel("请使用 App 或 微信 扫描二维码登录\n登录后将自动关闭本窗口")
@@ -24,13 +72,6 @@ class PlatformLoginWindow(QDialog):
         self._progress_label = QLabel("正在加载登录页面...")
         layout.addWidget(self._progress_label)
 
-        try:
-            from PySide6.QtWebEngineWidgets import QWebEngineView
-        except ImportError:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "错误", "缺少 QtWebEngine 模块，无法使用扫码登录。\n请安装: pip install PySide6-QtWebEngine")
-            self.reject()
-            return
         self.browser = QWebEngineView()
         layout.addWidget(self.browser)
 
@@ -43,13 +84,6 @@ class PlatformLoginWindow(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
         layout.addWidget(self.btn_cancel)
 
-        try:
-            from PySide6.QtWebEngineCore import QWebEngineProfile
-        except ImportError:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "错误", "缺少 QtWebEngineCore 模块")
-            self.reject()
-            return
         profile = QWebEngineProfile.defaultProfile()
         cookie_store = profile.cookieStore()
         cookie_store.cookieAdded.connect(self._on_cookie_added)
@@ -59,6 +93,52 @@ class PlatformLoginWindow(QDialog):
 
         QTimer.singleShot(3000, lambda: self._enable_confirm())
         QTimer.singleShot(120000, lambda: self._check_stuck())
+
+    def _setup_cookie_import(self):
+        """Fallback for the lite build (no QtWebEngine): paste cookies manually."""
+        self.resize(560, 500)
+        layout = QVBoxLayout(self)
+
+        hint = QLabel(
+            "当前为「精简版」，未内置浏览器。\n\n"
+            "1. 点击下方按钮，在系统浏览器中打开登录页并完成登录\n"
+            "2. 登录后按 F12 → Application/应用 → Cookies，复制相关 Cookie\n"
+            "3. 粘贴到下方（支持 k=v; k2=v2 或 JSON），点击确定"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        open_btn = QPushButton("打开登录页面")
+        open_btn.setObjectName("secondaryBtn")
+        open_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(self._login_url))
+        )
+        layout.addWidget(open_btn)
+
+        layout.addWidget(QLabel("Cookie："))
+        self.cookie_edit = QPlainTextEdit()
+        self.cookie_edit.setPlaceholderText("name1=value1; name2=value2")
+        layout.addWidget(self.cookie_edit, 1)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        ok_btn = QPushButton("确定")
+        ok_btn.setObjectName("primaryBtn")
+        ok_btn.clicked.connect(self._on_cookie_ok)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        row.addWidget(ok_btn)
+        row.addWidget(cancel_btn)
+        layout.addLayout(row)
+
+    def _on_cookie_ok(self):
+        cookies = parse_cookie_text(self.cookie_edit.toPlainText())
+        if not cookies:
+            QMessageBox.warning(self, "提示", "请粘贴有效的 Cookie")
+            return
+        self.login_successful.emit(cookies)
+        QMessageBox.information(self, "已保存", "Cookie 已保存")
+        self.accept()
 
     def _enable_confirm(self):
         if not self._login_detected:
