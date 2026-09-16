@@ -42,7 +42,8 @@ def parse_cookie_text(text: str) -> dict:
     return out
 
 
-def spawn_webview_login(login_url, domain_filter, title, success_prefix=None, timeout=600):
+def spawn_webview_login(login_url, domain_filter, title, success_prefix=None,
+                        auth_cookie=None, timeout=600):
     """Run the WebView2 login helper in a subprocess; return (cookies, error).
 
     The helper writes its result to a temp file because the frozen (windowed)
@@ -54,15 +55,24 @@ def spawn_webview_login(login_url, domain_filter, title, success_prefix=None, ti
     fd, outfile = tempfile.mkstemp(prefix="blogc_login_", suffix=".json")
     os.close(fd)
 
+    config = {
+        "url": login_url,
+        "domain": domain_filter,
+        "title": title,
+        "success_prefix": success_prefix,
+        "auth_cookie": auth_cookie,
+        "outfile": outfile,
+        "timeout": timeout,
+    }
+    config_arg = json.dumps(config, ensure_ascii=False)
+
     if getattr(sys, "frozen", False):
-        cmd = [sys.executable, "--login-webview", login_url, domain_filter, title,
-               success_prefix or "-", outfile]
+        cmd = [sys.executable, "--login-webview", config_arg]
     else:
         cmd = [
             sys.executable,
             str(Path(__file__).resolve().parent / "main.py"),
-            "--login-webview", login_url, domain_filter, title,
-            success_prefix or "-", outfile,
+            "--login-webview", config_arg,
         ]
 
     data = None
@@ -114,16 +124,18 @@ class LoginWorker(QThread):
     done = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, login_url, domain_filter, title, success_prefix=None):
+    def __init__(self, login_url, domain_filter, title, success_prefix=None, auth_cookie=None):
         super().__init__()
         self.login_url = login_url
         self.domain_filter = domain_filter
         self.title = title
         self.success_prefix = success_prefix
+        self.auth_cookie = auth_cookie
 
     def run(self):
         cookies, err = spawn_webview_login(
-            self.login_url, self.domain_filter, self.title, self.success_prefix
+            self.login_url, self.domain_filter, self.title,
+            self.success_prefix, self.auth_cookie,
         )
         if cookies:
             self.done.emit(cookies)
@@ -135,13 +147,15 @@ class PlatformLoginWindow(QDialog):
     login_successful = Signal(dict)
 
     def __init__(self, parent, login_url: str, domain_filter: str,
-                 window_title: str = "登录", success_check=None, success_prefix=None):
+                 window_title: str = "登录", success_check=None, success_prefix=None,
+                 auth_cookie=None):
         super().__init__(parent)
         self.setWindowTitle(window_title)
         self.resize(560, 520)
         self._login_url = login_url
         self._domain_filter = domain_filter
         self._success_prefix = success_prefix
+        self._auth_cookie = auth_cookie
         self._worker = None
 
         layout = QVBoxLayout(self)
@@ -184,7 +198,8 @@ class PlatformLoginWindow(QDialog):
         self.scan_btn.setEnabled(False)
         self.status.setText("已弹出登录窗口，请扫码完成登录…")
         self._worker = LoginWorker(
-            self._login_url, self._domain_filter, self.windowTitle(), self._success_prefix
+            self._login_url, self._domain_filter, self.windowTitle(),
+            self._success_prefix, self._auth_cookie,
         )
         self._worker.done.connect(self._on_scan_done)
         self._worker.failed.connect(self._on_scan_failed)
@@ -216,4 +231,5 @@ class CsdnLoginWindow(PlatformLoginWindow):
             login_url="https://passport.csdn.net/login",
             domain_filter="csdn.net",
             window_title="登录 CSDN",
+            auth_cookie="UserName",
         )

@@ -1,11 +1,22 @@
 """Standalone WebView2 login helper (runs in a subprocess).
 
 Invoked as:
-  <python|exe> --login-webview <login_url> <domain_filter> <title> [success_prefix]
+  <python|exe> --login-webview <json>
 
-Shows the platform login page in a WebView2 window (pywebview, using the system
-WebView2 runtime), waits for the user to finish scanning/logging in, then prints
-a single JSON line prefixed with MARKER to stdout and exits.
+where <json> is:
+  {
+    "url": "<login page url>",
+    "domain": "<domain filter>",
+    "title": "<window title>",
+    "success_prefix": "<url prefix>|null",
+    "auth_cookie": "<cookie name that appears after login>|null",
+    "outfile": "<path to write result json>|null",
+    "timeout": 600
+  }
+
+Shows the platform login page in a WebView2 window (pywebview, system WebView2),
+waits for the user to finish, then writes {"cookies": {...}} (or {"error": ...})
+to <outfile> and prints a MARKER-prefixed line to stdout.
 
 Running in a separate process avoids a GUI-loop conflict with PySide6.
 """
@@ -15,6 +26,19 @@ import sys
 import time
 
 MARKER = "__BLOGC_COOKIES__"
+
+# Some login pages hand off to the system browser via target=_blank / window.open.
+# Redirect those navigations back into the current WebView2 window instead.
+_PATCH_JS = """
+(function () {
+  if (window.__blogcPatched) return;
+  window.__blogcPatched = true;
+  window.open = function (url) {
+    if (url) { window.location.href = url; }
+    return null;
+  };
+})();
+"""
 
 
 def flatten(cookies) -> dict:
@@ -35,7 +59,7 @@ def flatten(cookies) -> dict:
     return out
 
 
-def _is_success(url, domain_filter, success_prefix):
+def _is_success_url(url, domain_filter, success_prefix):
     if not url:
         return False
     if success_prefix:
@@ -44,32 +68,63 @@ def _is_success(url, domain_filter, success_prefix):
     return "login" not in low and "passport" not in low and domain_filter in url
 
 
-def run(login_url, domain_filter, title="登录", success_prefix=None, outfile=None, timeout=600):
+def run(config: dict) -> int:
+    login_url = config.get("url")
+    domain_filter = config.get("domain", "")
+    title = config.get("title", "登录")
+    success_prefix = config.get("success_prefix")
+    auth_cookie = config.get("auth_cookie")
+    outfile = config.get("outfile")
+    timeout = config.get("timeout", 600)
+
     try:
         import webview
     except Exception as e:
         _emit({"error": f"pywebview 不可用: {e}"}, outfile)
         return 2
 
+    try:
+        webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
+    except Exception:
+        pass
+
     state = {"cookies": None, "error": None}
 
     window = webview.create_window(title, login_url, width=520, height=740)
+
+    def on_loaded(*args):
+        try:
+            window.evaluate_js(_PATCH_JS)
+        except Exception:
+            pass
+
+    try:
+        window.events.loaded += on_loaded
+    except Exception:
+        pass
 
     def worker():
         start = time.time()
         time.sleep(2)
         while time.time() - start < timeout:
             try:
-                url = window.get_current_url()
+                cookies = flatten(window.get_cookies())
             except Exception:
-                url = None
-            if _is_success(url, domain_filter, success_prefix):
-                time.sleep(2)
-                try:
-                    state["cookies"] = flatten(window.get_cookies())
-                except Exception as e:
-                    state["error"] = f"获取 Cookie 失败: {e}"
+                cookies = {}
+
+            if auth_cookie and cookies.get(auth_cookie):
+                state["cookies"] = cookies
                 break
+
+            if not auth_cookie:
+                try:
+                    url = window.get_current_url()
+                except Exception:
+                    url = None
+                if _is_success_url(url, domain_filter, success_prefix):
+                    state["cookies"] = cookies
+                    break
+
             time.sleep(1)
         try:
             window.destroy()

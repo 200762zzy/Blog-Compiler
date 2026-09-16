@@ -61,6 +61,7 @@ class JuejinPublisher(BasePublisher):
             login_url="https://juejin.cn/login",
             domain_filter="juejin.cn",
             window_title="登录掘金",
+            auth_cookie="sessionid",
         )
         result = False
         def on_success(cookies):

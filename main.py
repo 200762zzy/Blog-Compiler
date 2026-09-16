@@ -8,17 +8,19 @@ CRASH_LOG = Path.home() / ".blog-compiler" / "crash.log"
 
 
 def _run_webview_login(argv) -> int:
+    import json
+
     import webview_login
 
-    if len(argv) < 4:
-        print("usage: --login-webview <login_url> <domain_filter> <title> <success_prefix|-> <outfile>")
+    if len(argv) < 2:
+        print("usage: --login-webview <json>")
         return 2
-    login_url = argv[1]
-    domain_filter = argv[2]
-    title = argv[3]
-    success_prefix = argv[4] if len(argv) > 4 and argv[4] != "-" else None
-    outfile = argv[5] if len(argv) > 5 and argv[5] != "-" else None
-    return webview_login.run(login_url, domain_filter, title, success_prefix, outfile)
+    try:
+        config = json.loads(argv[1])
+    except Exception as e:
+        print(f"invalid config: {e}")
+        return 2
+    return webview_login.run(config)
 
 
 def _setup_crash_handler():
