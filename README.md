@@ -80,9 +80,11 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 | 平台 | 登录方式 | 发布方式 | 图片处理 |
 |------|----------|----------|----------|
-| **CSDN** | 微信扫码登录（QtWebEngine） | x-ca-signature API | scdn.io 图床 |
-| **掘金** | 二维码扫码 + 手动确认 | Cookie API | ByteDance ImageX CDN（自动） |
+| **CSDN** | 微信扫码登录（系统 WebView2） | x-ca-signature API | scdn.io 图床 |
+| **掘金** | 二维码扫码（系统 WebView2） | Cookie API | ByteDance ImageX CDN（自动） |
 | **博客园** | 设置中配置 Cookie | XML-RPC | scdn.io 图床 |
+
+> 登录使用系统自带的 WebView2（Win10/11 默认已装），因此安装包不含 QtWebEngine，体积仅 ~77 MB；若系统缺少 WebView2，可退回手动粘贴 Cookie。
 
 - **Cookie 持久化** — 登录后自动保存，下次启动免登录
 - **标题自动提取** — 从文章第一个 `# ` 标题自动填充，可手动编辑
@@ -193,7 +195,7 @@ Blog-Compiler/
 
 ```bash
 py build.py
-# 输出: dist/BlogCompiler.exe (~233 MB, 含 QtWebEngine)
+# 输出: dist/BlogCompiler.exe (~77 MB, 登录用系统 WebView2)
 ```
 
 > 注：Windows 上请使用 `py` 而非 `python`，避免触发 Microsoft Store 的 Python 占位符。

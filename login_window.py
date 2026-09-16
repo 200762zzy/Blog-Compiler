@@ -1,18 +1,15 @@
-from PySide6.QtCore import QUrl, Signal, QTimer
-from PySide6.QtGui import QDesktopServices
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox,
     QPlainTextEdit,
 )
 
-try:
-    from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWebEngineCore import QWebEngineProfile
-    WEBENGINE_AVAILABLE = True
-except Exception:
-    QWebEngineView = None
-    QWebEngineProfile = None
-    WEBENGINE_AVAILABLE = False
+COOKIE_MARKER = "__BLOGC_COOKIES__"
 
 
 def parse_cookie_text(text: str) -> dict:
@@ -23,7 +20,6 @@ def parse_cookie_text(text: str) -> dict:
 
     if text.startswith("{"):
         try:
-            import json
             data = json.loads(text)
             if isinstance(data, dict):
                 out = {}
@@ -46,90 +42,162 @@ def parse_cookie_text(text: str) -> dict:
     return out
 
 
+def spawn_webview_login(login_url, domain_filter, title, success_prefix=None, timeout=600):
+    """Run the WebView2 login helper in a subprocess; return (cookies, error).
+
+    The helper writes its result to a temp file because the frozen (windowed)
+    exe has no usable stdout.
+    """
+    import os
+    import tempfile
+
+    fd, outfile = tempfile.mkstemp(prefix="blogc_login_", suffix=".json")
+    os.close(fd)
+
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--login-webview", login_url, domain_filter, title,
+               success_prefix or "-", outfile]
+    else:
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "main.py"),
+            "--login-webview", login_url, domain_filter, title,
+            success_prefix or "-", outfile,
+        ]
+
+    data = None
+    proc = None
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except Exception as e:
+        _cleanup(outfile)
+        return None, str(e)
+
+    try:
+        if os.path.exists(outfile):
+            content = Path(outfile).read_text(encoding="utf-8").strip()
+            if content:
+                data = json.loads(content)
+    except Exception:
+        data = None
+    _cleanup(outfile)
+
+    if data is None:
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith(COOKIE_MARKER):
+                try:
+                    data = json.loads(line[len(COOKIE_MARKER):])
+                except Exception:
+                    data = None
+                break
+
+    if data and data.get("cookies"):
+        return data["cookies"], None
+    if data:
+        return None, data.get("error", "未获取到 Cookie")
+    return None, ((proc.stderr or "登录窗口无输出").strip()[:300])
+
+
+def _cleanup(path):
+    import os
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+class LoginWorker(QThread):
+    done = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, login_url, domain_filter, title, success_prefix=None):
+        super().__init__()
+        self.login_url = login_url
+        self.domain_filter = domain_filter
+        self.title = title
+        self.success_prefix = success_prefix
+
+    def run(self):
+        cookies, err = spawn_webview_login(
+            self.login_url, self.domain_filter, self.title, self.success_prefix
+        )
+        if cookies:
+            self.done.emit(cookies)
+        else:
+            self.failed.emit(err or "登录失败")
+
+
 class PlatformLoginWindow(QDialog):
     login_successful = Signal(dict)
 
-    def __init__(self, parent, login_url: str, domain_filter: str, window_title: str = "登录", success_check=None):
+    def __init__(self, parent, login_url: str, domain_filter: str,
+                 window_title: str = "登录", success_check=None, success_prefix=None):
         super().__init__(parent)
         self.setWindowTitle(window_title)
-        self.resize(500, 700)
-        self.cookies = {}
-        self._login_detected = False
-        self._domain_filter = domain_filter
+        self.resize(560, 520)
         self._login_url = login_url
-        self._success_check = success_check
+        self._domain_filter = domain_filter
+        self._success_prefix = success_prefix
+        self._worker = None
 
-        if not WEBENGINE_AVAILABLE:
-            self._setup_cookie_import()
-            return
-
-        layout = QVBoxLayout(self)
-
-        hint = QLabel("请使用 App 或 微信 扫描二维码登录\n登录后将自动关闭本窗口")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        self._progress_label = QLabel("正在加载登录页面...")
-        layout.addWidget(self._progress_label)
-
-        self.browser = QWebEngineView()
-        layout.addWidget(self.browser)
-
-        self.btn_confirm = QPushButton("已完成扫码，确认登录")
-        self.btn_confirm.setEnabled(False)
-        self.btn_confirm.clicked.connect(self._on_manual_confirm)
-        layout.addWidget(self.btn_confirm)
-
-        self.btn_cancel = QPushButton("取消")
-        self.btn_cancel.clicked.connect(self.reject)
-        layout.addWidget(self.btn_cancel)
-
-        profile = QWebEngineProfile.defaultProfile()
-        cookie_store = profile.cookieStore()
-        cookie_store.cookieAdded.connect(self._on_cookie_added)
-
-        self.browser.urlChanged.connect(self._on_url_changed)
-        self.browser.load(QUrl(self._login_url))
-
-        QTimer.singleShot(3000, lambda: self._enable_confirm())
-        QTimer.singleShot(120000, lambda: self._check_stuck())
-
-    def _setup_cookie_import(self):
-        """Fallback for the lite build (no QtWebEngine): paste cookies manually."""
-        self.resize(560, 500)
         layout = QVBoxLayout(self)
 
         hint = QLabel(
-            "当前为「精简版」，未内置浏览器。\n\n"
-            "1. 点击下方按钮，在系统浏览器中打开登录页并完成登录\n"
-            "2. 登录后按 F12 → Application/应用 → Cookies，复制相关 Cookie\n"
-            "3. 粘贴到下方（支持 k=v; k2=v2 或 JSON），点击确定"
+            "点击「扫码登录」后会弹出登录窗口，用 App / 微信扫码完成登录。\n"
+            "（使用系统 WebView2，无需内置浏览器）"
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        open_btn = QPushButton("打开登录页面")
-        open_btn.setObjectName("secondaryBtn")
-        open_btn.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(self._login_url))
-        )
-        layout.addWidget(open_btn)
+        self.scan_btn = QPushButton("扫码登录（推荐）")
+        self.scan_btn.setObjectName("primaryBtn")
+        self.scan_btn.clicked.connect(self._start_scan)
+        layout.addWidget(self.scan_btn)
 
-        layout.addWidget(QLabel("Cookie："))
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        layout.addWidget(QLabel("———— 或手动粘贴 Cookie ————"))
         self.cookie_edit = QPlainTextEdit()
         self.cookie_edit.setPlaceholderText("name1=value1; name2=value2")
         layout.addWidget(self.cookie_edit, 1)
 
         row = QHBoxLayout()
         row.addStretch()
-        ok_btn = QPushButton("确定")
-        ok_btn.setObjectName("primaryBtn")
-        ok_btn.clicked.connect(self._on_cookie_ok)
+        use_btn = QPushButton("使用 Cookie 登录")
+        use_btn.setObjectName("secondaryBtn")
+        use_btn.clicked.connect(self._on_cookie_ok)
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
-        row.addWidget(ok_btn)
+        row.addWidget(use_btn)
         row.addWidget(cancel_btn)
         layout.addLayout(row)
+
+    def _start_scan(self):
+        if self._worker and self._worker.isRunning():
+            return
+        self.scan_btn.setEnabled(False)
+        self.status.setText("已弹出登录窗口，请扫码完成登录…")
+        self._worker = LoginWorker(
+            self._login_url, self._domain_filter, self.windowTitle(), self._success_prefix
+        )
+        self._worker.done.connect(self._on_scan_done)
+        self._worker.failed.connect(self._on_scan_failed)
+        self._worker.start()
+
+    def _on_scan_done(self, cookies):
+        self.login_successful.emit(cookies)
+        QMessageBox.information(self, "登录成功", f"{self.windowTitle()} 成功！")
+        self.accept()
+
+    def _on_scan_failed(self, err):
+        self.scan_btn.setEnabled(True)
+        self.status.setText(f"扫码登录失败：{err}\n可尝试在下方手动粘贴 Cookie。")
 
     def _on_cookie_ok(self):
         cookies = parse_cookie_text(self.cookie_edit.toPlainText())
@@ -140,62 +208,6 @@ class PlatformLoginWindow(QDialog):
         QMessageBox.information(self, "已保存", "Cookie 已保存")
         self.accept()
 
-    def _enable_confirm(self):
-        if not self._login_detected:
-            self.btn_confirm.setEnabled(True)
-            self._progress_label.setText("请扫描二维码完成登录")
-
-    def _on_cookie_added(self, cookie):
-        name = cookie.name().data().decode(errors="replace")
-        value = cookie.value().data().decode(errors="replace")
-        domain = cookie.domain()
-        self.cookies[name] = {"value": value, "domain": domain}
-
-    def _on_url_changed(self, url):
-        url_str = url.toString()
-        if self._login_detected:
-            return
-        if self._is_login_successful(url_str):
-            self._login_detected = True
-            self._progress_label.setText("登录成功，正在获取 Cookie...")
-            QTimer.singleShot(2000, self._finalize_login)
-
-    def _is_login_successful(self, url_str: str) -> bool:
-        if self._success_check:
-            return self._success_check(url_str)
-        return (
-            "login" not in url_str.lower()
-            and self._domain_filter in url_str
-        )
-
-    def _finalize_login(self):
-        domain = self._domain_filter
-        user_cookies = {
-            k: v["value"]
-            for k, v in self.cookies.items()
-            if domain in v.get("domain", "")
-        }
-        if user_cookies:
-            self.login_successful.emit(user_cookies)
-            QMessageBox.information(self, "登录成功", f"{self.windowTitle()} 成功！")
-            self.accept()
-        else:
-            self._progress_label.setText("等待 Cookie 完成...")
-            QTimer.singleShot(2000, self._finalize_login)
-
-    def _check_stuck(self):
-        if not self._login_detected:
-            current_url = self.browser.url().toString()
-            if "login" in current_url:
-                self._progress_label.setText("请扫描二维码完成登录...")
-
-    def _on_manual_confirm(self):
-        if self._login_detected:
-            return
-        self._login_detected = True
-        self._progress_label.setText("登录确认，正在获取 Cookie...")
-        QTimer.singleShot(2000, self._finalize_login)
-
 
 class CsdnLoginWindow(PlatformLoginWindow):
     def __init__(self, parent=None):
@@ -204,9 +216,4 @@ class CsdnLoginWindow(PlatformLoginWindow):
             login_url="https://passport.csdn.net/login",
             domain_filter="csdn.net",
             window_title="登录 CSDN",
-            success_check=lambda url: (
-                "passport.csdn.net" not in url
-                and "login" not in url
-                and url.startswith("https://www.csdn.net/")
-            ),
         )

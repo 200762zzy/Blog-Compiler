@@ -2,10 +2,11 @@
 Blog Compiler build script.
 
 Usage:
-  py build.py            # full build (with QtWebEngine scan-login, ~236 MB)
-  py build.py --lite     # lite build (no QtWebEngine, cookie import, much smaller)
+  py build.py
+
+Single unified build: UI uses PySide6, login uses the system WebView2 runtime
+via pywebview (no bundled QtWebEngine).
 """
-import argparse
 import io
 import subprocess
 import sys
@@ -15,7 +16,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 
 SEP = ":" if sys.platform != "win32" else ";"
 
-COMMON_EXCLUDES = [
+EXCLUDES = [
     "PySide6.QtDesigner", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
     "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtTest",
     "PySide6.QtSql", "PySide6.QtSensors", "PySide6.QtSerialPort",
@@ -23,30 +24,23 @@ COMMON_EXCLUDES = [
     "PySide6.QtPositioning", "PySide6.QtLocation", "PySide6.QtRemoteObjects",
     "PySide6.QtScxml", "PySide6.QtStateMachine", "PySide6.QtTextToSpeech",
     "PySide6.QtHelp", "PySide6.QtUiTools",
+    "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineQuick", "PySide6.QtWebChannel",
+    # pywebview ships Qt/GTK/CEF backends we don't use on Windows
+    "PyQt5", "PyQt6",
+    "webview.platforms.qt", "webview.platforms.gtk",
+    "webview.platforms.cef", "webview.platforms.android",
+    "webview.platforms.mshtml",
     "tkinter", "unittest", "pydoc", "doctest", "pdb",
-]
-
-LITE_EXCLUDES = [
-    "PySide6.QtWebEngineWidgets",
-    "PySide6.QtWebEngineCore",
-    "PySide6.QtWebEngineQuick",
-    "PySide6.QtWebChannel",
 ]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build Blog Compiler")
-    parser.add_argument(
-        "--lite", action="store_true",
-        help="构建精简版（不含 QtWebEngine，登录改用系统浏览器 + Cookie 导入）",
-    )
-    args = parser.parse_args()
-
     repo_root = Path(__file__).parent
-    name = "BlogCompiler-lite" if args.lite else "BlogCompiler"
+    name = "BlogCompiler"
 
     print("=" * 50)
-    print(f"  Blog Compiler - Build Script ({'LITE' if args.lite else 'FULL'})")
+    print("  Blog Compiler - Build Script")
     print("=" * 50)
 
     pyinstaller_args = [
@@ -61,20 +55,15 @@ def main():
         "--add-data", f"icon.ico{SEP}.",
         "--hidden-import", "publishers",
         "--collect-submodules", "publishers",
+        "--hidden-import", "webview",
+        "--hidden-import", "webview.platforms.edgechromium",
+        "--hidden-import", "webview.platforms.winforms",
+        "--collect-data", "webview",
+        "--hidden-import", "clr",
     ]
 
-    for mod in COMMON_EXCLUDES:
+    for mod in EXCLUDES:
         pyinstaller_args += ["--exclude-module", mod]
-
-    if args.lite:
-        for mod in LITE_EXCLUDES:
-            pyinstaller_args += ["--exclude-module", mod]
-    else:
-        pyinstaller_args += [
-            "--hidden-import", "PySide6.QtWebEngineWidgets",
-            "--hidden-import", "PySide6.QtWebEngineCore",
-            "--hidden-import", "PySide6.QtWebChannel",
-        ]
 
     pyinstaller_args.append(str(repo_root / "main.py"))
 
