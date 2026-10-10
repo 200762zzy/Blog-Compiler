@@ -211,6 +211,76 @@ class TestPanelMaximize:
         assert laid_out._maximized_panel is None
 
 
+class TestBadConfigDoesNotCrashStartup:
+    """回归：早期版本把下拉框索引（整数）写进了 ai_tone，导致启动即崩。
+
+    崩溃点在 `_restore_ai_settings` → `findText(4)`：
+    QComboBox.findText 只接受字符串，收到 int 直接抛 TypeError。
+    这类脏数据必须容错，否则用户升级后连程序都打不开。
+    """
+
+    @staticmethod
+    def _write_bad_config(config_dir, tone):
+        import json
+
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text(
+            json.dumps({"ai_tone": tone, "ai_tone_custom": ""}), encoding="utf-8"
+        )
+
+    @pytest.mark.parametrize("bad_tone", [4, 0, None, [], {"a": 1}, "不存在的语气"])
+    def test_startup_survives(self, qapp, isolated_settings, bad_tone):
+        import app as app_module
+
+        self._write_bad_config(isolated_settings, bad_tone)
+
+        window = app_module.MainWindow()
+        try:
+            assert window.tone_combo.currentText() in app_module.MainWindow.TONE_PRESETS
+        finally:
+            updater = getattr(window, "_updater", None)
+            if updater is not None and updater.isRunning():
+                updater.wait(3000)
+            window.close()
+            window.deleteLater()
+
+    def test_bad_value_is_rewritten_on_disk(self, qapp, isolated_settings):
+        """修正结果要落盘，不能每次启动都重新纠一遍。"""
+        import json
+
+        import app as app_module
+
+        self._write_bad_config(isolated_settings, 4)
+        window = app_module.MainWindow()
+        try:
+            saved = json.loads((isolated_settings / "config.json").read_text(encoding="utf-8"))
+            assert saved["ai_tone"] == "技术博主风"
+        finally:
+            window.close()
+            window.deleteLater()
+
+    def test_valid_custom_tone_is_kept(self, qapp, isolated_settings):
+        """自定义语气文本还在时，不该被当成脏数据清掉。"""
+        import json
+
+        import app as app_module
+
+        self._write_bad_config(isolated_settings, "自定义...")
+        config = json.loads((isolated_settings / "config.json").read_text(encoding="utf-8"))
+        config["ai_tone_custom"] = "像一位耐心的师兄"
+        (isolated_settings / "config.json").write_text(
+            json.dumps(config, ensure_ascii=False), encoding="utf-8"
+        )
+
+        window = app_module.MainWindow()
+        try:
+            assert window.settings.get("ai_tone") == "自定义..."
+            assert window._custom_tone_text == "像一位耐心的师兄"
+        finally:
+            window.close()
+            window.deleteLater()
+
+
 class TestModelHint:
     """「使用模型」标签以前从没被赋值，一直是空白。"""
 

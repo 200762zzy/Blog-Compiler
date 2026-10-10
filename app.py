@@ -871,12 +871,11 @@ class MainWindow(QMainWindow):
         lay.addWidget(tone_label)
         self.tone_combo = QComboBox()
         self.tone_combo.addItems(["技术博主风", "学生笔记风", "教程风", "轻松口语化", "自定义..."])
-        # activated 是重载信号（int/str 两个版本），直接接方法会拿到**索引而不是文字**。
-        # 显式用 currentText() 取值；另外它能对「重复选同一条」发信号，
-        # 这正是「重复点自定义要能再弹窗」所需要的。
-        self.tone_combo.activated.connect(
-            lambda _=0: self._on_tone_changed(self.tone_combo.currentText())
-        )
+        # activated 是重载信号（int / str 两个版本）。绝不要直连方法——
+        # PySide6 会选 int 版本，方法收到的是**索引**而不是文字。
+        # 用 currentText() 显式取文字；同时 activated 对「重复选中同一条」
+        # 也会发出，这正是「重复点自定义要能再弹窗」所需要的。
+        self.tone_combo.activated.connect(self._on_tone_activated)
         lay.addWidget(self.tone_combo)
 
         model_label = QLabel("使用模型")
@@ -1637,6 +1636,22 @@ class MainWindow(QMainWindow):
             if path.lower().endswith(('.md', '.markdown')):
                 self._add_file(path)
 
+    def _on_tone_activated(self, index: int = 0):
+        """下拉框被点击后的入口。
+
+        单独包一层（而不是直接连 lambda 或方法）有两个原因：
+        1. activated 是重载信号，这里用 int 版本，文字自己从 currentText() 取
+        2. 任何异常都要能看见——之前自定义窗口打不开时是静默失败的，
+           既没有报错也没有日志，只能靠猜
+        """
+        try:
+            self._on_tone_changed(self.tone_combo.currentText())
+        except Exception as exc:  # noqa: BLE001 - 界面回调必须兜住，否则 Qt 会吞掉
+            import traceback
+            self.log(f"❌ 切换语气失败: {exc}")
+            self.log(traceback.format_exc().splitlines()[-1])
+            QMessageBox.warning(self, "切换语气失败", f"{type(exc).__name__}: {exc}")
+
     def _on_tone_changed(self, text: str):
         """语气下拉框的选择处理。
 
@@ -1661,18 +1676,43 @@ class MainWindow(QMainWindow):
             self._custom_tone_text = new_text.strip()
             self.settings.set("ai_tone_custom", self._custom_tone_text)
             self.settings.set("ai_tone", "自定义...")
+            self.log(f"✍️ 已设置自定义语气（{len(self._custom_tone_text)} 字）")
         else:
             # 取消：回到上次选中的预设
             self.settings.set("ai_tone", self._tone_before_custom)
 
         self._reset_tone_combo_to(self.settings.get("ai_tone", "技术博主风"))
 
+    #: 内置语气。读配置时要拿它校验，避免历史脏数据把界面搞崩。
+    TONE_PRESETS = ("技术博主风", "学生笔记风", "教程风", "轻松口语化")
+
+    def _sanitize_tone(self, value) -> str:
+        """把配置里读出的语气值修成合法的字符串。
+
+        早期版本有个 Bug 会把下拉框的**索引**（整数）存进 ai_tone，
+        于是启动时 findText(4) 直接抛 TypeError 崩掉。这里统一兜住：
+        非字符串或不在预设/自定义里的值，一律退回默认语气并清掉脏数据。
+        """
+        if isinstance(value, str) and value in self.TONE_PRESETS:
+            return value
+        if value == "自定义..." and self._custom_tone_text.strip():
+            return "自定义..."
+        # 脏数据：修正并落盘，避免每次启动都走一遍
+        self.settings.set("ai_tone", "技术博主风")
+        if value not in (None, "", "技术博主风"):
+            self.log(f"⚠️ 语气配置异常（{value!r}），已重置为「技术博主风」")
+        return "技术博主风"
+
     def _reset_tone_combo_to(self, tone: str):
         """把下拉框复位到指定语气，期间不触发信号。"""
+        if not isinstance(tone, str):
+            tone = "技术博主风"
         target = tone if tone != "自定义..." else self._tone_before_custom
-        idx = self.tone_combo.findText(target)
+        idx = self.tone_combo.findText(str(target))
         if idx < 0:
             idx = self.tone_combo.findText("技术博主风")
+        if idx < 0:
+            idx = 0
         self.tone_combo.blockSignals(True)
         self.tone_combo.setCurrentIndex(idx)
         self.tone_combo.blockSignals(False)
@@ -1683,8 +1723,8 @@ class MainWindow(QMainWindow):
         model = self.settings.get("ai_model", DEFAULT_MODEL)
         temperature = self.settings.get("ai_temperature", 0.7)
         max_tokens = self.settings.get("ai_max_tokens", 32768)
-        saved_tone = self.settings.get("ai_tone", "技术博主风")
-        self._custom_tone_text = self.settings.get("ai_tone_custom", "")
+        self._custom_tone_text = self.settings.get("ai_tone_custom", "") or ""
+        saved_tone = self._sanitize_tone(self.settings.get("ai_tone", "技术博主风"))
         # 记住「自定义」之前用的是哪个预设，取消时要退回去
         self._tone_before_custom = (
             saved_tone if saved_tone in ("技术博主风", "学生笔记风", "教程风", "轻松口语化")
