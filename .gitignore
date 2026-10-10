@@ -16,3 +16,4 @@ config.enc
 .pytest_tmp/
 .build-log.txt
 .mockups/
+.msg.txt
