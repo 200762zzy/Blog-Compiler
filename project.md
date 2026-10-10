@@ -19,7 +19,7 @@
 | MD 解析 | mistune | 解析统计 + HTML 预览 |
 | HTTP | httpx | 统一经 `http_client` 工厂，支持代理 |
 | 配置加密 | cryptography (Fernet) | 加密 API Key 等敏感项 |
-| 打包 | PyInstaller | 单文件 exe，约 77 MB |
+| 打包 | PyInstaller | 单文件 exe，本地构建约 77 MB、CI 约 54 MB |
 
 ---
 
@@ -308,7 +308,13 @@ py build.py
 体积控制的关键在 `build.py` 的 `EXCLUDES`：排除 QtWebEngine、QtTest、QtSql 等
 未使用模块，登录改用系统 WebView2，因此不打包浏览器内核。
 
-发版流程：改 `version.py` → 更新 README 特性段落 → 打 `v*` tag 触发 CI。
+**体积会因构建机而异**：CI 产出的正式版约 **54 MB**，本地开发机可能到 **77 MB**。
+差异来自本机 Python 环境里多装的可选依赖被打进包（主要是 `pythonnet`），
+不是 CI 产物有问题——判断产物是否完整要看归档里的模块，不能只看体积。
+
+发版流程：改 `version.py` → 更新 README → **在网页手动创建 Release**（这一步不能省，
+否则 CI 会用自己的机器人身份替你建一个空 Release）→ 打 `v*` tag 触发 CI 挂上 exe。
+详见 [CONTRIBUTING.md](CONTRIBUTING.md) 的「发布新版本」。
 
 ---
 

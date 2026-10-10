@@ -63,7 +63,40 @@ py build.py
 ```
 
 > 登录改用系统 WebView2，安装包不再包含 QtWebEngine，因此体积从早期的
-> 236 MB 降到约 77 MB。若系统缺少 WebView2，可在界面中手动粘贴 Cookie。
+> 236 MB 降到约 77 MB（CI 构建约 54 MB，差异来自构建机上多装了可选依赖）。
+> 若系统缺少 WebView2，可在界面中手动粘贴 Cookie。
+
+---
+
+## 发布新版本
+
+**顺序很重要**：先建 Release，再让 CI 挂附件。
+
+1. 改 `version.py`，更新 README 的版本段落，提交推送
+2. **在网页上手动创建 Release**：仓库 → Releases → *Draft a new release* →
+   填标签（如 `v3.1.1`）→ 写标题和更新说明 → Publish
+3. CI 检测到 `v*` 标签会自动构建，并把 `BlogCompiler.exe`
+   **挂到你刚建好的 Release 上**（工作流里的 `overwrite: true` 就是干这个的）
+
+### 为什么要手动建 Release
+
+工作流用的是仓库自带的 `secrets.GITHUB_TOKEN`。这个令牌由 GitHub 自动签发，
+**持有人在 GitHub 看来是 `github-actions[bot]` 而非仓库所有者**，所以：
+
+| 做法 | Release 署名 | 结果 |
+|------|-------------|------|
+| 手动建 Release，CI 挂附件 | 你自己 | ✅ 标题正文由你写 |
+| 只推标签，等 CI 自己建 | `github-actions[bot]` | ❌ 标题正文为空 |
+
+如果只推标签就撒手，CI 会发现该标签没有对应的 Release 而自行创建一个，
+署名是机器人且没有任何更新说明——**这时只能删掉 Release 重建**。
+
+> 删除时**千万不要删标签**。标签一没，CI 会再次自动创建一个机器人 Release。
+> 正确做法：删 Release → 重新 *Draft a new release* → 选已存在的那个标签。
+
+如果希望全自动且署名是自己，需要把个人访问令牌存成仓库 Secret
+（如 `RELEASE_TOKEN`）替换工作流里的 `GITHUB_TOKEN`；代价是长期有效的
+令牌风险高于用完即弃的内置令牌，一般不建议。
 
 ---
 
