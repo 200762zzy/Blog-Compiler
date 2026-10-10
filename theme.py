@@ -341,6 +341,25 @@ _TEMPLATE = Template("""
         color: $text_muted;
         font-size: 11.5px;
     }
+    /* 标题条右侧的「展开/还原」按钮：平时几乎隐形，悬停才显现 */
+    QPushButton#panelBtn {
+        background-color: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+    }
+    QPushButton#panelBtn:hover {
+        background-color: $bg_hover;
+        border-color: $border_strong;
+    }
+    QPushButton#panelBtn:pressed {
+        background-color: $accent_soft;
+        border-color: $accent;
+    }
+    QCheckBox#syncCheck {
+        color: $text_muted;
+        font-size: 12px;
+        spacing: 6px;
+    }
     QWidget#panel_original, QWidget#panel_rewritten, QWidget#panel_preview,
     QSplitter#compare {
         background-color: $bg_base;

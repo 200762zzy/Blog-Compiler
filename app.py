@@ -14,18 +14,34 @@ from PySide6.QtWidgets import (
 )
 
 
-def _panel_header(title: str, role: str = "plain") -> tuple[QFrame, QHBoxLayout]:
-    """并排面板的标题条：左边名称，右边放状态/操作。"""
+def _panel_header(
+    title: str, role: str = "plain", on_expand=None
+) -> tuple[QFrame, QHBoxLayout, object]:
+    """并排面板的标题条：左边名称，中间状态，右边「展开/还原」。
+
+    返回 (标题条, 布局, 展开按钮)，展开按钮可能为 None。
+    """
     bar = QFrame()
     bar.setObjectName("panelHeader")
     lay = QHBoxLayout(bar)
-    lay.setContentsMargins(12, 7, 10, 7)
+    lay.setContentsMargins(12, 6, 8, 6)
     lay.setSpacing(8)
     label = QLabel(title)
     label.setObjectName("panelTitle" if role == "plain" else f"panelTitle_{role}")
     lay.addWidget(label)
     lay.addStretch()
-    return bar, lay
+
+    expand_btn = None
+    if on_expand is not None:
+        expand_btn = QPushButton()
+        expand_btn.setObjectName("panelBtn")
+        expand_btn.setIcon(get_icon("expand", size=14))
+        expand_btn.setToolTip(f"展开「{title}」占满中间区域")
+        expand_btn.setFixedSize(24, 24)
+        expand_btn.setCursor(Qt.PointingHandCursor)
+        expand_btn.clicked.connect(on_expand)
+        lay.addWidget(expand_btn)
+    return bar, lay, expand_btn
 
 from PySide6.QtSvg import QSvgRenderer
 
@@ -666,7 +682,7 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        bar, bar_lay = _panel_header("文档")
+        bar, bar_lay, _ = _panel_header("文档")
         self.file_counter = QLabel("")
         self.file_counter.setObjectName("panelCounter")
         bar_lay.addWidget(self.file_counter)
@@ -688,7 +704,9 @@ class MainWindow(QMainWindow):
             lay.setContentsMargins(0, 0, 0, 0)
             lay.setSpacing(0)
 
-            bar, bar_lay = _panel_header(title, role)
+            bar, bar_lay, expand_btn = _panel_header(
+                title, role, on_expand=lambda _=False, r=role: self._toggle_panel_max(r)
+            )
             counter = QLabel("")
             counter.setObjectName("panelCounter")
             bar_lay.addWidget(counter)
@@ -699,17 +717,17 @@ class MainWindow(QMainWindow):
             view.setReadOnly(read_only)
             view.setFont(QFont("Consolas", 10))
             lay.addWidget(view, 1)
-            return panel, view, counter
+            return panel, view, counter, expand_btn
 
         self.compare = QSplitter(Qt.Horizontal)
         self.compare.setObjectName("compare")
         self.compare.setHandleWidth(1)
         self.compare.setChildrenCollapsible(False)
 
-        self.original_panel, self.original_view, self.original_counter = _source_panel(
+        self.original_panel, self.original_view, self.original_counter, self.original_expand = _source_panel(
             "原文", "original", read_only=True
         )
-        self.rewritten_panel, self.rewritten_view, self.rewritten_counter = _source_panel(
+        self.rewritten_panel, self.rewritten_view, self.rewritten_counter, self.rewritten_expand = _source_panel(
             "改写后", "rewritten", read_only=False
         )
         self.compare.addWidget(self.original_panel)
@@ -722,7 +740,9 @@ class MainWindow(QMainWindow):
         preview_layout = QVBoxLayout(self.preview_panel)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(0)
-        pv_bar, pv_lay = _panel_header("预览", "preview")
+        pv_bar, pv_lay, self.preview_expand = _panel_header(
+            "预览", "preview", on_expand=lambda _=False: self._toggle_panel_max("preview")
+        )
         self.preview_stats = QLabel("选择文件后自动生成预览")
         self.preview_stats.setObjectName("panelCounter")
         pv_lay.addWidget(self.preview_stats)
@@ -740,6 +760,27 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.preview_render, 1)
 
         self.preview_panel.setVisible(False)
+        self._preview_visible = False
+        self._maximized_panel = None
+        self._syncing_scroll = False
+        self._scroll_sync_enabled = True
+
+        # 原文与改写后互相同步滚动，方便逐段对照
+        self.original_view.verticalScrollBar().valueChanged.connect(
+            lambda _=0: self._sync_scroll(self.original_view, self.rewritten_view)
+        )
+        self.rewritten_view.verticalScrollBar().valueChanged.connect(
+            lambda _=0: self._sync_scroll(self.rewritten_view, self.original_view)
+        )
+        # 双击标题条也能展开/还原
+        for role, panel in (("original", self.original_panel),
+                            ("rewritten", self.rewritten_panel),
+                            ("preview", self.preview_panel)):
+            header = panel.findChild(QFrame, "panelHeader")
+            if header is not None:
+                header.mouseDoubleClickEvent = (
+                    lambda event, r=role: self._toggle_panel_max(r)
+                )
         self.compare.addWidget(self.preview_panel)
         self.compare.setStretchFactor(2, 1)
         self.compare.setSizes([1, 1, 0])
@@ -918,6 +959,12 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+K"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+,"), self, self._show_settings)
         QShortcut(QKeySequence("Ctrl+P"), self, self._open_publish_dialog)
+        # 展开/还原面板：Ctrl+1/2/3 对应原文/改写后/预览，Esc 退出展开
+        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._toggle_panel_max("original"))
+        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self._toggle_panel_max("rewritten"))
+        QShortcut(QKeySequence("Ctrl+3"), self, lambda: self._toggle_panel_max("preview"))
+        QShortcut(QKeySequence("Ctrl+0"), self, self._restore_panels)
+        QShortcut(QKeySequence("Esc"), self, self._toggle_maximized_panel)
 
     def _build_action_bar(self) -> QWidget:
         """常驻底栏：只放最常用的动作，不随步骤切换。"""
@@ -964,6 +1011,18 @@ class MainWindow(QMainWindow):
         self.btn_multi_publish.clicked.connect(self._open_publish_dialog)
         self.btn_multi_publish.setEnabled(False)
         row.addWidget(self.btn_multi_publish, 2)
+
+        self.scroll_sync_check = QCheckBox("滚动同步")
+        self.scroll_sync_check.setObjectName("syncCheck")
+        self.scroll_sync_check.setToolTip(
+            "左右两栏按比例同步滚动，方便逐段对照；行数不同时也能大致对上"
+        )
+        self.scroll_sync_check.setChecked(
+            self.settings.get("scroll_sync", True)
+        )
+        self._scroll_sync_enabled = self.scroll_sync_check.isChecked()
+        self.scroll_sync_check.toggled.connect(self._on_scroll_sync_toggled)
+        row.addWidget(self.scroll_sync_check)
 
         lay.addLayout(row)
 
@@ -1365,16 +1424,127 @@ class MainWindow(QMainWindow):
             summary += f"\n⚠ {missing} 张路径找不到对应文件"
         self.image_summary.setText(summary)
 
+    # ---- 面板展开 / 折叠 -------------------------------------------------
+    def _panel_widgets(self) -> dict:
+        return {
+            "original": self.original_panel,
+            "rewritten": self.rewritten_panel,
+            "preview": self.preview_panel,
+        }
+
+    def _panel_buttons(self) -> dict:
+        return {
+            "original": self.original_expand,
+            "rewritten": self.rewritten_expand,
+            "preview": self.preview_expand,
+        }
+
+    def _toggle_panel_max(self, role: str):
+        """把某个面板撑满中间区域；再点一次还原。"""
+        if getattr(self, "_maximized_panel", None) == role:
+            self._restore_panels()
+        else:
+            self._maximize_panel(role)
+
+    def _maximize_panel(self, role: str):
+        widgets = self._panel_widgets()
+        if role not in widgets:
+            return
+
+        self._maximized_panel = role
+        for name, panel in widgets.items():
+            # 其它面板收成 0 宽而不是隐藏，这样分隔条还在，可以拖回来
+            if name == role:
+                panel.setMinimumWidth(0)
+                panel.setMaximumWidth(16777215)
+            else:
+                panel.setMinimumWidth(0)
+                panel.setMaximumWidth(0)
+
+        total = max(self.compare.width(), 1)
+        order = ["original", "rewritten", "preview"]
+        sizes = [total if name == role else 0 for name in order]
+        self.compare.setSizes(sizes)
+        self._refresh_panel_buttons()
+
+    def _restore_panels(self):
+        self._maximized_panel = None
+        for panel in self._panel_widgets().values():
+            panel.setMinimumWidth(0)
+            panel.setMaximumWidth(16777215)
+        self.preview_panel.setVisible(self._preview_visible)
+        self._relayout_compare()
+        self._refresh_panel_buttons()
+
+    def _relayout_compare(self):
+        """按当前可见面板数量均分中间区域。"""
+        visible = [p for p in self._panel_widgets().values() if p.isVisible()]
+        if not visible:
+            return
+        total = max(self.compare.width(), len(visible))
+        share = total // len(visible)
+        order = ["original", "rewritten", "preview"]
+        widgets = self._panel_widgets()
+        self.compare.setSizes([
+            share if widgets[name].isVisible() else 0 for name in order
+        ])
+
+    def _refresh_panel_buttons(self):
+        current = getattr(self, "_maximized_panel", None)
+        for role, button in self._panel_buttons().items():
+            if button is None:
+                continue
+            expanded = current == role
+            button.setIcon(get_icon("collapse" if expanded else "expand", size=14))
+            title = {"original": "原文", "rewritten": "改写后", "preview": "预览"}[role]
+            button.setToolTip(
+                f"还原「{title}」" if expanded else f"展开「{title}」占满中间区域"
+            )
+
+    def _toggle_maximized_panel(self):
+        """Esc / 快捷键：从展开状态还原。"""
+        if getattr(self, "_maximized_panel", None):
+            self._restore_panels()
+
+    # ---- 双栏滚动同步 ---------------------------------------------------
+    def _sync_scroll(self, source, target):
+        """把 source 的滚动位置按比例同步给 target。
+
+        按比例而不是绝对位置：原文和改写后的行数往往不同，
+        绝对同步会在后面越错越远。
+        """
+        if getattr(self, "_syncing_scroll", False):
+            return
+        if not getattr(self, "_scroll_sync_enabled", True):
+            return
+        src_bar = source.verticalScrollBar()
+        dst_bar = target.verticalScrollBar()
+        src_max = src_bar.maximum()
+        dst_max = dst_bar.maximum()
+        if src_max <= 0 or dst_max <= 0:
+            return
+
+        self._syncing_scroll = True
+        try:
+            dst_bar.setValue(int(src_bar.value() / src_max * dst_max))
+        finally:
+            self._syncing_scroll = False
+
+    def _on_scroll_sync_toggled(self, checked: bool):
+        self._scroll_sync_enabled = checked
+        self.settings.set("scroll_sync", checked)
+        self.log("🔗 已开启双栏滚动同步" if checked else "🔗 已关闭双栏滚动同步")
+
     def _set_preview_visible(self, visible: bool):
+        self._preview_visible = visible
+        # 展开别的面板时，预览的显隐要等还原后再恢复
         self.preview_panel.setVisible(visible)
-        if visible:
-            sizes = self.compare.sizes()
-            if len(sizes) == 3 and sizes[2] == 0:
-                third = max(self.compare.width() // 3, 1)
-                self.compare.setSizes([third, third, third])
+        if not getattr(self, "_maximized_panel", None):
+            self._relayout_compare()
+        self._refresh_panel_buttons()
 
     def toggle_preview(self):
-        self._set_preview_visible(not self.preview_panel.isVisible())
+        self._set_preview_visible(not self._preview_visible)
 
     def log(self, message: str):
         from datetime import datetime
