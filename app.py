@@ -10,8 +10,22 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QMessageBox, QProgressBar,
     QDialog, QLineEdit, QComboBox, QFormLayout, QDialogButtonBox,
     QGroupBox, QSpinBox, QDoubleSpinBox, QHBoxLayout, QFrame,
-    QCheckBox, QPlainTextEdit, QStackedWidget,
+    QCheckBox, QPlainTextEdit, QStackedWidget, QSizePolicy,
 )
+
+
+def _panel_header(title: str, role: str = "plain") -> tuple[QFrame, QHBoxLayout]:
+    """并排面板的标题条：左边名称，右边放状态/操作。"""
+    bar = QFrame()
+    bar.setObjectName("panelHeader")
+    lay = QHBoxLayout(bar)
+    lay.setContentsMargins(12, 7, 10, 7)
+    lay.setSpacing(8)
+    label = QLabel(title)
+    label.setObjectName("panelTitle" if role == "plain" else f"panelTitle_{role}")
+    lay.addWidget(label)
+    lay.addStretch()
+    return bar, lay
 
 from PySide6.QtSvg import QSvgRenderer
 
@@ -437,6 +451,100 @@ class CommandPalette(QDialog):
                 return
 
 
+STEP_TITLES = [
+    ("读取笔记", "导入 .md 文件"),
+    ("AI 改写", "选择语气和模型"),
+    ("图片处理", "上传或内嵌"),
+    ("发布", "选平台填标签"),
+]
+
+
+class Stepper(QFrame):
+    """顶部四步导航：点某一步就切换左侧的任务面板。"""
+
+    step_clicked = Signal(int)
+
+    def __init__(self, titles=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("stepper")
+        self._buttons = []
+        self._badges = []
+        self._current = 0
+        self._done: set[int] = set()
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(6)
+
+        titles = titles or STEP_TITLES
+        for index, (title, hint) in enumerate(titles):
+            if index:
+                arrow = QLabel("›")
+                arrow.setObjectName("stepArrow")
+                lay.addWidget(arrow)
+
+            card = QPushButton()
+            card.setObjectName("stepCard")
+            card.setCheckable(True)
+            card.setCursor(Qt.PointingHandCursor)
+            card.clicked.connect(lambda _=False, i=index: self.step_clicked.emit(i))
+            # QPushButton 自己的 sizeHint 只有一行高，装不下里面的两行文字，
+            # 不写死高度的话内层标签会被压成 0 高度（文字被裁掉）。
+            card.setFixedHeight(58)
+            card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+            card_lay = QHBoxLayout(card)
+            card_lay.setContentsMargins(10, 8, 12, 8)
+            card_lay.setSpacing(10)
+
+            badge = QLabel(str(index + 1))
+            badge.setObjectName("stepBadge")
+            badge.setFixedSize(24, 24)
+            badge.setAlignment(Qt.AlignCenter)
+            card_lay.addWidget(badge, 0, Qt.AlignVCenter)
+
+            text_col = QVBoxLayout()
+            text_col.setSpacing(1)
+            name = QLabel(title)
+            name.setObjectName("stepName")
+            name.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            desc = QLabel(hint)
+            desc.setObjectName("stepHint")
+            desc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            text_col.addWidget(name)
+            text_col.addWidget(desc)
+            card_lay.addLayout(text_col)
+            card_lay.addStretch()
+
+            lay.addWidget(card, 1)
+            self._buttons.append(card)
+            self._badges.append(badge)
+
+        self.set_current(0)
+
+    def current(self) -> int:
+        return self._current
+
+    def set_current(self, index: int):
+        self._current = index
+        for i, card in enumerate(self._buttons):
+            card.setChecked(i == index)
+
+    def set_done(self, index: int, done: bool = True):
+        if done:
+            self._done.add(index)
+        else:
+            self._done.discard(index)
+        self._refresh_badges()
+
+    def _refresh_badges(self):
+        for i, badge in enumerate(self._badges):
+            badge.setText("✓" if i in self._done else str(i + 1))
+            badge.setProperty("state", "done" if i in self._done else "todo")
+            badge.style().unpolish(badge)
+            badge.style().polish(badge)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -489,9 +597,10 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.settings.set("onboarding_done", True)
 
+    # ------------------------------------------------------------------ UI
     def _setup_ui(self):
         self.setWindowTitle("Blog Compiler")
-        self.resize(1300, 850)
+        self.resize(1420, 900)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -502,236 +611,21 @@ class MainWindow(QMainWindow):
         self._build_command_bar()
         main_layout.addWidget(self._command_bar)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(1)
-        splitter.setChildrenCollapsible(False)
-
-        self.file_list = QListWidget()
-        self.file_list.setObjectName("fileList")
-        self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.file_list.itemClicked.connect(self._on_file_selected)
-
-        self.file_empty = QLabel("拖入 .md 文件\n或点击上方「添加文件」")
-        self.file_empty.setObjectName("emptyState")
-        self.file_empty.setAlignment(Qt.AlignCenter)
-        self.file_empty.setWordWrap(True)
-
-        self.file_stack = QStackedWidget()
-        self.file_stack.setObjectName("fileStack")
-        self.file_stack.addWidget(self.file_empty)
-        self.file_stack.addWidget(self.file_list)
-        self.file_stack.setCurrentIndex(0)
-
-        self.file_panel = QWidget()
-        self.file_panel.setObjectName("filePanel")
-        fp_layout = QVBoxLayout(self.file_panel)
-        fp_layout.setContentsMargins(0, 0, 0, 0)
-        fp_layout.setSpacing(0)
-        fp_layout.addWidget(self.file_stack)
-        self.file_panel.setMinimumWidth(200)
-        self.file_panel.setMaximumWidth(350)
-
-        self.content_tabs = QTabWidget()
-        self.content_tabs.setObjectName("contentTabs")
-        self.original_view = QTextEdit()
-        self.original_view.setObjectName("editor")
-        self.original_view.setReadOnly(True)
-        self.original_view.setFont(QFont("Consolas", 10))
-
-        preview_tab = QWidget()
-        preview_layout = QVBoxLayout(preview_tab)
-        preview_layout.setContentsMargins(8, 8, 8, 8)
-
-        self.preview_stats = QLabel("选择文件后自动生成预览")
-        self.preview_stats.setObjectName("previewStats")
-        self.preview_stats.setMaximumHeight(28)
-        preview_layout.addWidget(self.preview_stats)
-
-        self.image_status_list = QListWidget()
-        self.image_status_list.setObjectName("imageStatus")
-        self.image_status_list.setMaximumHeight(100)
-        self.image_status_list.setVisible(False)
-        preview_layout.addWidget(self.image_status_list)
-
-        self.preview_render = QTextBrowser()
-        self.preview_render.setObjectName("previewRender")
-        self.preview_render.setOpenExternalLinks(False)
-        preview_layout.addWidget(self.preview_render, 1)
-
-        self.rewritten_view = QTextEdit()
-        self.rewritten_view.setObjectName("editor")
-        self.rewritten_view.setFont(QFont("Consolas", 10))
-
-        self.content_tabs.addTab(self.original_view, "原文")
-        self.content_tabs.addTab(preview_tab, "预览")
-        self.content_tabs.addTab(self.rewritten_view, "改写后")
-        self.content_tabs.setTabEnabled(2, False)
-
-        right_panel = QWidget()
-        right_panel.setObjectName("rightPanel")
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(8, 8, 8, 8)
-        right_layout.setSpacing(8)
-
-        def _make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
-            card = QFrame()
-            card.setObjectName("card")
-            cl = QVBoxLayout(card)
-            cl.setContentsMargins(12, 10, 12, 10)
-            cl.setSpacing(6)
-            if title:
-                tl = QLabel(title)
-                tl.setObjectName("cardTitle")
-                cl.addWidget(tl)
-            right_layout.addWidget(card)
-            return card, cl
-
-        # Card 1: AI 改写
-        card_ai, cl_ai = _make_card("AI 改写")
-        tone_row = QHBoxLayout()
-        tone_row.setSpacing(6)
-        tone_label = QLabel("语气")
-        tone_label.setObjectName("toneLabel")
-        tone_row.addWidget(tone_label)
-        self.tone_combo = QComboBox()
-        self.tone_combo.addItems(["技术博主风", "学生笔记风", "教程风", "轻松口语化", "自定义..."])
-        self.tone_combo.currentTextChanged.connect(self._on_tone_changed)
-        tone_row.addWidget(self.tone_combo, 1)
-        cl_ai.addLayout(tone_row)
-
-        self.btn_ai = QPushButton(" AI 改写")
-        self.btn_ai.setIcon(get_icon("ai"))
-        self.btn_ai.setObjectName("primaryBtn")
-        self.btn_ai.clicked.connect(self._ai_rewrite)
-        self.btn_ai.setEnabled(False)
-        cl_ai.addWidget(self.btn_ai)
-
-        self.btn_export = QPushButton(" 导出文件")
-        self.btn_export.setIcon(get_icon("export"))
-        self.btn_export.setObjectName("secondaryBtn")
-        self.btn_export.clicked.connect(self._export_file)
-        self.btn_export.setEnabled(False)
-        cl_ai.addWidget(self.btn_export)
-
-        self.btn_copy = QPushButton(" 复制到剪贴板")
-        self.btn_copy.setIcon(get_icon("copy"))
-        self.btn_copy.setObjectName("secondaryBtn")
-        self.btn_copy.clicked.connect(self._export_clipboard)
-        self.btn_copy.setEnabled(False)
-        cl_ai.addWidget(self.btn_copy)
-
-        draft_row = QHBoxLayout()
-        draft_row.setSpacing(4)
-        self.draft_combo = QComboBox()
-        self.draft_combo.setObjectName("draftCombo")
-        self.draft_combo.setPlaceholderText("草稿历史")
-        self.draft_combo.setEnabled(False)
-        draft_row.addWidget(self.draft_combo, 1)
-        self.btn_restore_draft = QPushButton("恢复")
-        self.btn_restore_draft.setObjectName("draftBtn")
-        self.btn_restore_draft.setEnabled(False)
-        self.btn_restore_draft.clicked.connect(self._switch_draft)
-        draft_row.addWidget(self.btn_restore_draft)
-        cl_ai.addLayout(draft_row)
-
-        # Card 2: 图片处理
-        card_img, cl_img = _make_card("图片处理")
-        from PySide6.QtWidgets import QButtonGroup, QRadioButton
-        self.img_mode_group = QButtonGroup(self)
-        self.rb_img_alt = QRadioButton("生成 alt 文本（删路径）")
-        self.rb_img_upload = QRadioButton("上传 scdn.io 图床")
-        self.rb_img_keep = QRadioButton("保留原路径")
-        self.rb_img_alt.setChecked(True)
-        self.img_mode_group.addButton(self.rb_img_alt, 1)
-        self.img_mode_group.addButton(self.rb_img_upload, 2)
-        self.img_mode_group.addButton(self.rb_img_keep, 3)
-        cl_img.addWidget(self.rb_img_alt)
-        cl_img.addWidget(self.rb_img_upload)
-        cl_img.addWidget(self.rb_img_keep)
-
-        # Card 3: 多平台发布
-        card_pub, cl_pub = _make_card("多平台发布")
-        self._pub_status_labels = {}
-        self._pub_login_btns = {}
-        for p in get_publishers():
-            status = QLabel("❌ 未登录")
-            status.setObjectName(f"{p.name}Status")
-            self._pub_status_labels[p.name] = status
-
-            head = QHBoxLayout()
-            head.setSpacing(6)
-            name_label = QLabel(f"{p.name}")
-            name_label.setObjectName("pubName")
-            head.addWidget(name_label)
-            head.addWidget(status)
-            head.addStretch()
-            cl_pub.addLayout(head)
-
-            btns = QHBoxLayout()
-            btns.setSpacing(6)
-            login_btn = QPushButton("登录")
-            login_btn.setObjectName("secondaryBtn")
-            login_btn.clicked.connect(lambda checked, name=p.name: self._publisher_login(name))
-            self._pub_login_btns[p.name] = login_btn
-            btns.addWidget(login_btn, 1)
-
-            acct_btn = QPushButton("账号管理")
-            acct_btn.setObjectName("draftBtn")
-            acct_btn.setToolTip("多账号管理")
-            acct_btn.clicked.connect(
-                lambda checked, name=p.name: self._show_account_manager(name)
-            )
-            btns.addWidget(acct_btn, 1)
-            cl_pub.addLayout(btns)
-
-        self.btn_multi_publish = QPushButton(" 多平台发布")
-        self.btn_multi_publish.setIcon(get_icon("publish"))
-        self.btn_multi_publish.setObjectName("primaryBtn")
-        self.btn_multi_publish.clicked.connect(self._open_publish_dialog)
-        self.btn_multi_publish.setEnabled(False)
-        cl_pub.addWidget(self.btn_multi_publish)
-
-        # Card 4: 日志
-        card_log, cl_log = _make_card("")
-        self.log_view = QTextEdit()
-        self.log_view.setObjectName("logView")
-        self.log_view.setReadOnly(True)
-        self.log_view.setFont(QFont("Consolas", 9))
-        self.log_view.setMaximumHeight(200)
-        self.log_view.setPlaceholderText("运行日志将显示在这里")
-        cl_log.addWidget(self.log_view)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setObjectName("progressBar")
-        self.progress_bar.setVisible(False)
-        cl_log.addWidget(self.progress_bar)
-
-        right_layout.addStretch()
-
-        self.inspector = right_panel
-        self.inspector.setMinimumWidth(240)
-        self.inspector.setMaximumWidth(420)
-
-        splitter.addWidget(self.file_panel)
-        splitter.addWidget(self.content_tabs)
-        splitter.addWidget(self.inspector)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 4)
-        splitter.setStretchFactor(2, 1)
-        self.splitter = splitter
-
-        self._build_nav_rail()
+        # 四步导航：切步骤 = 换左侧任务面板
+        self.stepper = Stepper()
+        self.stepper.step_clicked.connect(self._go_to_step)
+        main_layout.addWidget(self.stepper)
 
         body = QWidget()
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
-        body_layout.addWidget(self.nav_rail)
-        body_layout.addWidget(splitter, 1)
-
+        body_layout.addWidget(self._build_file_panel())
+        body_layout.addWidget(self._build_work_area(), 1)
+        body_layout.addWidget(self._build_task_panel())
         main_layout.addWidget(body, 1)
 
-        self.inspector.setVisible(False)
+        main_layout.addWidget(self._build_action_bar())
 
         self.status_bar = QStatusBar()
         self.status_bar.setObjectName("statusBar")
@@ -748,6 +642,275 @@ class MainWindow(QMainWindow):
 
         self.setAcceptDrops(True)
         self._setup_shortcuts()
+        self._go_to_step(0)
+
+    def _build_file_panel(self) -> QWidget:
+        self.file_list = QListWidget()
+        self.file_list.setObjectName("fileList")
+        self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.file_list.itemClicked.connect(self._on_file_selected)
+
+        self.file_empty = QLabel("拖入 .md 文件\n或点击上方「添加文件」")
+        self.file_empty.setObjectName("emptyState")
+        self.file_empty.setAlignment(Qt.AlignCenter)
+        self.file_empty.setWordWrap(True)
+
+        self.file_stack = QStackedWidget()
+        self.file_stack.setObjectName("fileStack")
+        self.file_stack.addWidget(self.file_empty)
+        self.file_stack.addWidget(self.file_list)
+        self.file_stack.setCurrentIndex(0)
+
+        panel = QWidget()
+        panel.setObjectName("filePanel")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        bar, bar_lay = _panel_header("文档")
+        self.file_counter = QLabel("")
+        self.file_counter.setObjectName("panelCounter")
+        bar_lay.addWidget(self.file_counter)
+        lay.addWidget(bar)
+        lay.addWidget(self.file_stack)
+
+        self.file_panel = panel
+        self.file_panel.setMinimumWidth(200)
+        self.file_panel.setMaximumWidth(320)
+        return panel
+
+    def _build_work_area(self) -> QWidget:
+        """中心区：原文 / 改写后并排，预览作为可折叠的第三栏。"""
+
+        def _source_panel(title: str, role: str, read_only: bool):
+            panel = QWidget()
+            panel.setObjectName(f"panel_{role}")
+            lay = QVBoxLayout(panel)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+
+            bar, bar_lay = _panel_header(title, role)
+            counter = QLabel("")
+            counter.setObjectName("panelCounter")
+            bar_lay.addWidget(counter)
+            lay.addWidget(bar)
+
+            view = QTextEdit()
+            view.setObjectName("editor")
+            view.setReadOnly(read_only)
+            view.setFont(QFont("Consolas", 10))
+            lay.addWidget(view, 1)
+            return panel, view, counter
+
+        self.compare = QSplitter(Qt.Horizontal)
+        self.compare.setObjectName("compare")
+        self.compare.setHandleWidth(1)
+        self.compare.setChildrenCollapsible(False)
+
+        self.original_panel, self.original_view, self.original_counter = _source_panel(
+            "原文", "original", read_only=True
+        )
+        self.rewritten_panel, self.rewritten_view, self.rewritten_counter = _source_panel(
+            "改写后", "rewritten", read_only=False
+        )
+        self.compare.addWidget(self.original_panel)
+        self.compare.addWidget(self.rewritten_panel)
+        self.compare.setStretchFactor(0, 1)
+        self.compare.setStretchFactor(1, 1)
+
+        self.preview_panel = QWidget()
+        self.preview_panel.setObjectName("panel_preview")
+        preview_layout = QVBoxLayout(self.preview_panel)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(0)
+        pv_bar, pv_lay = _panel_header("预览", "preview")
+        self.preview_stats = QLabel("选择文件后自动生成预览")
+        self.preview_stats.setObjectName("panelCounter")
+        pv_lay.addWidget(self.preview_stats)
+        preview_layout.addWidget(pv_bar)
+
+        self.image_status_list = QListWidget()
+        self.image_status_list.setObjectName("imageStatus")
+        self.image_status_list.setMaximumHeight(100)
+        self.image_status_list.setVisible(False)
+        preview_layout.addWidget(self.image_status_list)
+
+        self.preview_render = QTextBrowser()
+        self.preview_render.setObjectName("previewRender")
+        self.preview_render.setOpenExternalLinks(False)
+        preview_layout.addWidget(self.preview_render, 1)
+
+        self.preview_panel.setVisible(False)
+        self.compare.addWidget(self.preview_panel)
+        self.compare.setStretchFactor(2, 1)
+        self.compare.setSizes([1, 1, 0])
+        self.content_tabs = self.compare
+        return self.compare
+
+    def _build_task_panel(self) -> QWidget:
+        """左侧任务面板：四步各一页，避免把十几组控件挤在一列里。"""
+        self.task_stack = QStackedWidget()
+        self.task_stack.setObjectName("taskPanel")
+        for builder in (
+            self._build_step_read,
+            self._build_step_rewrite,
+            self._build_step_image,
+            self._build_step_publish,
+        ):
+            page = QWidget()
+            page.setObjectName("taskPage")
+            inner = QVBoxLayout(page)
+            inner.setContentsMargins(16, 14, 16, 14)
+            inner.setSpacing(12)
+            builder(inner)
+            inner.addStretch()
+            self.task_stack.addWidget(page)
+
+        self.task_stack.setMinimumWidth(300)
+        self.task_stack.setMaximumWidth(420)
+        return self.task_stack
+
+    def _build_step_read(self, lay: QVBoxLayout):
+        title = QLabel("导入你的笔记")
+        title.setObjectName("taskTitle")
+        lay.addWidget(title)
+        desc = QLabel("拖入或选择 .md 文件，程序会解析段落、代码块、表格和图片，"
+                      "并按所选方式处理图片。")
+        desc.setObjectName("taskDesc")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+
+        self.stats_label = QLabel("尚未选择文件")
+        self.stats_label.setObjectName("statBlock")
+        self.stats_label.setWordWrap(True)
+        lay.addWidget(self.stats_label)
+
+        self.stats_detail = QLabel("")
+        self.stats_detail.setObjectName("statDetail")
+        self.stats_detail.setWordWrap(True)
+        lay.addWidget(self.stats_detail)
+
+    def _build_step_rewrite(self, lay: QVBoxLayout):
+        title = QLabel("要改成什么风格？")
+        title.setObjectName("taskTitle")
+        lay.addWidget(title)
+        desc = QLabel("只改文字表达，代码块、表格、图片标记都原样保留。")
+        desc.setObjectName("taskDesc")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+
+        tone_label = QLabel("语气")
+        tone_label.setObjectName("taskLabel")
+        lay.addWidget(tone_label)
+        self.tone_combo = QComboBox()
+        self.tone_combo.addItems(["技术博主风", "学生笔记风", "教程风", "轻松口语化", "自定义..."])
+        self.tone_combo.currentTextChanged.connect(self._on_tone_changed)
+        lay.addWidget(self.tone_combo)
+
+        model_label = QLabel("使用模型")
+        model_label.setObjectName("taskLabel")
+        lay.addWidget(model_label)
+        self.model_hint = QLabel("")
+        self.model_hint.setObjectName("statDetail")
+        self.model_hint.setWordWrap(True)
+        lay.addWidget(self.model_hint)
+
+        draft_label = QLabel("草稿历史")
+        draft_label.setObjectName("taskLabel")
+        lay.addWidget(draft_label)
+        draft_row = QHBoxLayout()
+        draft_row.setSpacing(6)
+        self.draft_combo = QComboBox()
+        self.draft_combo.setObjectName("draftCombo")
+        self.draft_combo.setPlaceholderText("尚未生成草稿")
+        self.draft_combo.setEnabled(False)
+        draft_row.addWidget(self.draft_combo, 1)
+        self.btn_restore_draft = QPushButton("恢复")
+        self.btn_restore_draft.setObjectName("draftBtn")
+        self.btn_restore_draft.setEnabled(False)
+        self.btn_restore_draft.clicked.connect(self._switch_draft)
+        draft_row.addWidget(self.btn_restore_draft)
+        lay.addLayout(draft_row)
+
+    def _build_step_image(self, lay: QVBoxLayout):
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
+
+        title = QLabel("图片怎么处理？")
+        title.setObjectName("taskTitle")
+        lay.addWidget(title)
+        desc = QLabel("CSDN 与掘金发布时还会各自上传一份到自家图床，"
+                      "这里选的是改写阶段怎么对待正文里的图片。")
+        desc.setObjectName("taskDesc")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+
+        self.img_mode_group = QButtonGroup(self)
+        self.rb_img_alt = QRadioButton("生成 alt 文本（删掉路径）")
+        self.rb_img_upload = QRadioButton("上传到 scdn.io 图床")
+        self.rb_img_keep = QRadioButton("保留原路径不动")
+        self.rb_img_alt.setChecked(True)
+        self.img_mode_group.addButton(self.rb_img_alt, 1)
+        self.img_mode_group.addButton(self.rb_img_upload, 2)
+        self.img_mode_group.addButton(self.rb_img_keep, 3)
+        lay.addWidget(self.rb_img_alt)
+        lay.addWidget(self.rb_img_upload)
+        lay.addWidget(self.rb_img_keep)
+
+        self.image_summary = QLabel("尚未解析图片")
+        self.image_summary.setObjectName("statBlock")
+        self.image_summary.setWordWrap(True)
+        lay.addWidget(self.image_summary)
+
+    def _build_step_publish(self, lay: QVBoxLayout):
+        title = QLabel("发到哪些平台？")
+        title.setObjectName("taskTitle")
+        lay.addWidget(title)
+        desc = QLabel("先在下面登录，再点底部的「多平台发布」选择标签与分类。")
+        desc.setObjectName("taskDesc")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+
+        self._pub_status_labels = {}
+        self._pub_login_btns = {}
+        self._pub_account_btns = {}
+        for p in get_publishers():
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            name_label = QLabel(p.name)
+            name_label.setObjectName("pubName")
+            name_label.setMinimumWidth(52)
+            row.addWidget(name_label)
+
+            status = QLabel("❌ 未登录")
+            status.setObjectName(f"{p.name}Status")
+            self._pub_status_labels[p.name] = status
+            row.addWidget(status, 1)
+
+            login_btn = QPushButton("登录")
+            login_btn.setObjectName("secondaryBtn")
+            login_btn.clicked.connect(lambda _=False, name=p.name: self._publisher_login(name))
+            self._pub_login_btns[p.name] = login_btn
+            row.addWidget(login_btn)
+
+            acct_btn = QPushButton("账号")
+            acct_btn.setObjectName("draftBtn")
+            acct_btn.setToolTip("多账号管理")
+            acct_btn.clicked.connect(
+                lambda _=False, name=p.name: self._show_account_manager(name)
+            )
+            self._pub_account_btns[p.name] = acct_btn
+            row.addWidget(acct_btn)
+            lay.addLayout(row)
+
+        self.precheck_label = QLabel("")
+        self.precheck_label.setObjectName("statBlock")
+        self.precheck_label.setWordWrap(True)
+        lay.addWidget(self.precheck_label)
+
+    def _filter_files(self, text):
+        text = text.strip().lower()
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            item.setHidden(bool(text) and text not in item.text().lower())
 
     def _setup_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+O"), self, self._add_files)
@@ -756,58 +919,119 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+,"), self, self._show_settings)
         QShortcut(QKeySequence("Ctrl+P"), self, self._open_publish_dialog)
 
-    def _build_nav_rail(self):
-        self.nav_rail = QFrame()
-        self.nav_rail.setObjectName("navRail")
-        self.nav_rail.setFixedWidth(52)
-        rl = QVBoxLayout(self.nav_rail)
-        rl.setContentsMargins(6, 10, 6, 10)
-        rl.setSpacing(6)
+    def _build_action_bar(self) -> QWidget:
+        """常驻底栏：只放最常用的动作，不随步骤切换。"""
+        bar = QFrame()
+        bar.setObjectName("actionBar")
+        lay = QVBoxLayout(bar)
+        lay.setContentsMargins(14, 9, 14, 9)
+        lay.setSpacing(8)
 
-        def _rail(icon_name, tooltip, slot, checkable=False, checked=False):
-            b = QPushButton()
-            b.setIcon(get_icon(icon_name))
-            b.setObjectName("railBtn")
-            b.setToolTip(tooltip)
-            b.setCheckable(checkable)
-            if checkable:
-                b.setChecked(checked)
-            b.clicked.connect(slot)
-            rl.addWidget(b)
-            return b
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("progressBar")
+        self.progress_bar.setVisible(False)
+        lay.addWidget(self.progress_bar)
 
-        self.rail_file = _rail(
-            "file", "文件列表", self._toggle_file_panel, checkable=True, checked=True
-        )
-        self.rail_rewrite = _rail(
-            "ai", "改写检查器", self._toggle_inspector, checkable=True
-        )
-        self.rail_image = _rail(
-            "image", "图片处理", self._toggle_inspector, checkable=True
-        )
-        self.rail_history = _rail("history", "发布历史", self._show_publish_history)
-        self.rail_publish = _rail("publish", "多平台发布", self._open_publish_dialog)
-        rl.addStretch()
-        self.rail_settings = _rail("settings", "设置", self._show_settings)
+        row = QHBoxLayout()
+        row.setSpacing(8)
 
-    def _toggle_file_panel(self):
-        self.file_panel.setVisible(self.rail_file.isChecked())
+        self.btn_ai = QPushButton(" AI 改写")
+        self.btn_ai.setIcon(get_icon("ai"))
+        self.btn_ai.setObjectName("primaryBtn")
+        self.btn_ai.setMinimumHeight(36)
+        self.btn_ai.clicked.connect(self._ai_rewrite)
+        self.btn_ai.setEnabled(False)
+        row.addWidget(self.btn_ai, 2)
 
-    def _toggle_inspector(self):
-        sender = self.sender()
-        if sender is self.rail_image:
-            visible = self.rail_image.isChecked()
+        self.btn_copy = QPushButton("复制")
+        self.btn_copy.setIcon(get_icon("copy"))
+        self.btn_copy.setObjectName("secondaryBtn")
+        self.btn_copy.clicked.connect(self._export_clipboard)
+        self.btn_copy.setEnabled(False)
+        row.addWidget(self.btn_copy, 1)
+
+        self.btn_export = QPushButton("导出")
+        self.btn_export.setIcon(get_icon("export"))
+        self.btn_export.setObjectName("secondaryBtn")
+        self.btn_export.clicked.connect(self._export_file)
+        self.btn_export.setEnabled(False)
+        row.addWidget(self.btn_export, 1)
+
+        self.btn_multi_publish = QPushButton(" 多平台发布")
+        self.btn_multi_publish.setIcon(get_icon("publish"))
+        self.btn_multi_publish.setObjectName("primaryBtn")
+        self.btn_multi_publish.setMinimumHeight(36)
+        self.btn_multi_publish.clicked.connect(self._open_publish_dialog)
+        self.btn_multi_publish.setEnabled(False)
+        row.addWidget(self.btn_multi_publish, 2)
+
+        lay.addLayout(row)
+
+        self.log_view = QTextEdit()
+        self.log_view.setObjectName("logView")
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(QFont("Consolas", 9))
+        self.log_view.setFixedHeight(64)
+        self.log_view.setPlaceholderText("运行日志将显示在这里")
+        lay.addWidget(self.log_view)
+        return bar
+
+    def _go_to_step(self, index: int):
+        """切换左侧任务面板，并让对应按钮拿到焦点。"""
+        self.stepper.set_current(index)
+        self.task_stack.setCurrentIndex(index)
+        for i in (0, 1, 2, 3):
+            if i == index:
+                self.stepper.set_done(i, self._step_finished(i))
+        if index == 3:
+            self._update_precheck()
+
+    def _step_finished(self, index: int) -> bool:
+        if index == 0:
+            return bool(self.current_content)
+        if index == 1:
+            return bool(self.rewritten_content)
+        if index == 2:
+            return bool(self.current_result and self.current_result.images)
+        return bool(self.rewritten_content)
+
+    def _update_step_states(self):
+        for i in (0, 1, 2, 3):
+            self.stepper.set_done(i, self._step_finished(i))
+
+    def _update_precheck(self):
+        """发布前把能本地判断的问题先摆出来，省得发出去才发现。"""
+        lines = []
+        title = ""
+        content = self.rewritten_content or self.current_content
+        for line in (content or "").splitlines():
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+
+        if not title:
+            lines.append("⚠ 没有找到一级标题，发布时需手动填写标题")
+        elif len(title) > 30:
+            lines.append(f"⚠ 标题 {len(title)} 字，部分平台建议 30 字以内")
         else:
-            visible = self.rail_rewrite.isChecked()
-        self.inspector.setVisible(visible)
-        self.rail_rewrite.setChecked(visible)
-        self.rail_image.setChecked(visible)
+            lines.append(f"✓ 标题 {len(title)} 字，长度合适")
 
-    def _filter_files(self, text):
-        text = text.strip().lower()
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            item.setHidden(bool(text) and text not in item.text().lower())
+        if self.current_result and self.current_result.images:
+            exists = sum(1 for p in self.current_result.images if Path(p).exists())
+            total = len(self.current_result.images)
+            if exists == total:
+                lines.append(f"✓ {total} 张图片路径均存在")
+            else:
+                lines.append(f"⚠ {total - exists}/{total} 张图片找不到文件")
+        else:
+            lines.append("· 这篇文章没有图片")
+
+        fences = (content or "").count("```")
+        if fences and fences % 2:
+            lines.append("⚠ 代码块围栏数量是奇数，可能有一处没闭合")
+
+        self.precheck_label.setText("\n".join(lines))
+
 
     def _show_command_palette(self):
         commands = [
@@ -824,10 +1048,8 @@ class MainWindow(QMainWindow):
         ]
         dlg = CommandPalette(self, commands)
         dlg.exec()
-
     def _show_account_manager(self, platform=None):
         AccountManagerDialog(self, platform).exec()
-
     def _show_publish_history(self):
         history = self.settings.get("publish_history", []) or []
         PublishHistoryDialog(self, history).exec()
@@ -941,7 +1163,10 @@ class MainWindow(QMainWindow):
         self.current_content = ""
         self.current_result = None
         self.rewritten_content = ""
-        self.content_tabs.setTabEnabled(2, False)
+        self._update_panel_counters()
+        self._update_task_panels(None)
+        self._update_step_states()
+        self.file_counter.setText("")
         self.breadcrumb.setText("未选择文件")
         self._update_status()
         self.log("已清空文件列表")
@@ -982,12 +1207,15 @@ class MainWindow(QMainWindow):
                 f"表格: {result.table_count}"
             )
             self.image_count_label.setText(f"图片: {len(result.images)}")
-            self.content_tabs.setTabText(0, f"原文 ({Path(filepath).name})")
             self.btn_ai.setEnabled(self.ai_rewriter is not None)
-            self.content_tabs.setTabEnabled(2, False)
+            # 换文件时右侧必须清空，否则会显示上一篇的改写结果
             self.rewritten_content = ""
+            self.rewritten_view.clear()
             self.btn_export.setEnabled(False)
             self.btn_copy.setEnabled(False)
+            self._update_panel_counters()
+            self._update_task_panels(result, Path(filepath).name)
+            self._update_step_states()
 
             self.preview_stats.setText(
                 f"📊 {result.paragraph_count}段 · {result.code_block_count}代码块"
@@ -1046,6 +1274,7 @@ class MainWindow(QMainWindow):
             "rail_file": ("file", secondary),
             "rail_rewrite": ("ai", secondary),
             "rail_image": ("image", secondary),
+            "rail_preview": ("preview", secondary),
             "rail_history": ("history", secondary),
             "rail_publish": ("publish", secondary),
             "rail_settings": ("settings", secondary),
@@ -1078,6 +1307,74 @@ class MainWindow(QMainWindow):
         count = len(self.file_paths)
         self.file_count_label.setText(f"文件: {count}")
         self.file_stack.setCurrentIndex(1 if count else 0)
+        if hasattr(self, "file_counter"):
+            self.file_counter.setText(f"{count} 篇" if count else "")
+
+    def _update_panel_counters(self):
+        """两块并排面板各自显示字数，便于判断改写幅度。"""
+        original = self.original_view.toPlainText()
+        rewritten = self.rewritten_view.toPlainText()
+        self.original_counter.setText(f"{len(original)} 字" if original else "")
+        if rewritten:
+            self.rewritten_counter.setText(f"{len(rewritten)} 字")
+        else:
+            self.rewritten_counter.setText("尚未改写")
+        # 内容变了，步骤完成状态也跟着变
+        if hasattr(self, "stepper"):
+            self._update_step_states()
+
+    def _update_task_panels(self, result, filename: str = ""):
+        """把解析结果填进「读取笔记」和「图片处理」两步的面板。"""
+        if result is None:
+            self.stats_label.setText("尚未选择文件")
+            self.stats_detail.setText("")
+            self.image_summary.setText("尚未解析图片")
+            return
+
+        if not result.is_valid:
+            self.stats_label.setText(f"⚠ {result.error}")
+            self.stats_detail.setText("")
+            self.image_summary.setText("尚未解析图片")
+            return
+
+        head = f"📄 {filename}" if filename else "📄 当前文件"
+        self.stats_label.setText(
+            f"{head}\n"
+            f"段落 {result.paragraph_count} · 代码块 {result.code_block_count}\n"
+            f"图片 {len(result.images)} · 表格 {result.table_count}"
+        )
+
+        if result.headings:
+            lines = ["标题结构:"]
+            for level, text in result.headings[:8]:
+                lines.append(f"{'  ' * (level - 1)}H{level} {text}")
+            if len(result.headings) > 8:
+                lines.append(f"…及其他 {len(result.headings) - 8} 个标题")
+            self.stats_detail.setText("\n".join(lines))
+        else:
+            self.stats_detail.setText("没有检测到标题，发布时标题需手动填写")
+
+        if not result.images:
+            self.image_summary.setText("这篇文章没有图片")
+            return
+
+        local = [p for p in result.images if Path(p).exists()]
+        missing = len(result.images) - len(local)
+        summary = f"共 {len(result.images)} 张图片，其中本地文件 {len(local)} 张"
+        if missing:
+            summary += f"\n⚠ {missing} 张路径找不到对应文件"
+        self.image_summary.setText(summary)
+
+    def _set_preview_visible(self, visible: bool):
+        self.preview_panel.setVisible(visible)
+        if visible:
+            sizes = self.compare.sizes()
+            if len(sizes) == 3 and sizes[2] == 0:
+                third = max(self.compare.width() // 3, 1)
+                self.compare.setSizes([third, third, third])
+
+    def toggle_preview(self):
+        self._set_preview_visible(not self.preview_panel.isVisible())
 
     def log(self, message: str):
         from datetime import datetime
@@ -1599,10 +1896,9 @@ class MainWindow(QMainWindow):
         self.original_view.setText(new_full)
         self.rewritten_content = new_full
         self.rewritten_view.setText(rewritten)
-        self.content_tabs.setTabEnabled(2, True)
         self.preview_stats.setText("📝 改写后预览")
         self.preview_render.setHtml(mistune.html(new_full))
-        self.content_tabs.setCurrentIndex(1)
+        self._update_panel_counters()
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
@@ -1631,8 +1927,7 @@ class MainWindow(QMainWindow):
         self._stream_buffer = ""
         self._last_stream_paint = 0.0
         self.rewritten_view.clear()
-        self.content_tabs.setTabEnabled(2, True)
-        self.content_tabs.setCurrentIndex(2)
+        self.rewritten_counter.setText("生成中…")
 
     def _on_rewrite_chunk(self, text, gen):
         if gen != self._rewrite_gen:
@@ -1654,11 +1949,11 @@ class MainWindow(QMainWindow):
         self.rewritten_content = result
         self._stream_buffer = result
         self._flush_stream()
-        self.content_tabs.setTabEnabled(2, True)
 
         self.preview_stats.setText("📝 改写后预览")
         self.preview_render.setHtml(mistune.html(result))
-        self.content_tabs.setCurrentIndex(1)
+        self._update_panel_counters()
+        self._set_preview_visible(True)
 
         self._reset_rewrite_ui()
         self.btn_export.setEnabled(True)
@@ -1719,8 +2014,7 @@ class MainWindow(QMainWindow):
         draft = self.drafts[idx]
         self.rewritten_content = draft["content"]
         self.rewritten_view.setText(draft["content"])
-        self.content_tabs.setTabEnabled(2, True)
-        self.content_tabs.setCurrentIndex(2)
+        self._update_panel_counters()
         self.btn_export.setEnabled(True)
         self.btn_copy.setEnabled(True)
         self.btn_multi_publish.setEnabled(True)

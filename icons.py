@@ -93,6 +93,10 @@ HISTORY_SVG = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
   <path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><polyline points="12 7 12 12 15 15"/>
 </svg>"""
 
+PREVIEW_SVG = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+</svg>"""
+
 
 icons = {}
 
@@ -106,6 +110,7 @@ def get(name: str, size: int = 20, color: str | None = None) -> QIcon:
             "copy": COPY_SVG, "login": LOGIN_SVG, "publish": PUBLISH_SVG,
             "logo": LOGO_SVG, "cancel": CANCEL_SVG,
             "file": FILE_SVG, "image": IMAGE_SVG, "history": HISTORY_SVG,
+            "preview": PREVIEW_SVG,
         }
         svg = svg_map.get(name, "")
         if svg:

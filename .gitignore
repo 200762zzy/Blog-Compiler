@@ -15,3 +15,4 @@ config.enc
 .pytest_cache/
 .pytest_tmp/
 .build-log.txt
+.mockups/
