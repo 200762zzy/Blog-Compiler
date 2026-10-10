@@ -19,7 +19,9 @@ import mistune
 
 from parser import parse_markdown
 from settings import Settings
-from ai_rewriter import AIRewriter, RewriteConfig
+from ai_rewriter import (
+    AIRewriter, RewriteConfig, DEFAULT_API_BASE, DEFAULT_MODEL, resolve_model_name,
+)
 from exporter import Exporter
 from image_uploader import upload_images
 from icons import get as get_icon, set_color as set_icon_color
@@ -279,8 +281,9 @@ class AccountManagerDialog(QDialog):
             QMessageBox.information(self, "提示", "请在下拉框中选择一个已保存账号")
             return
         data = items[idx].get("data", {})
-        for k in ACCOUNT_KEYS[platform]:
-            self.settings.set(k, data.get(k, ""))
+        with self.settings.batch():
+            for k in ACCOUNT_KEYS[platform]:
+                self.settings.set(k, data.get(k, ""))
         init_publishers(self.settings)
         self.parent._update_all_publisher_status()
         self.parent.log(f"🔁 已切换 {platform} 账号：{items[idx].get('label')}")
@@ -1111,8 +1114,8 @@ class MainWindow(QMainWindow):
 
     def _restore_ai_settings(self):
         api_key = self.settings.get_encrypted("ai_api_key")
-        api_base = self.settings.get("ai_api_base", "https://api.openai.com/v1")
-        model = self.settings.get("ai_model", "gpt-4o-mini")
+        api_base = self.settings.get("ai_api_base", DEFAULT_API_BASE)
+        model = self.settings.get("ai_model", DEFAULT_MODEL)
         temperature = self.settings.get("ai_temperature", 0.7)
         max_tokens = self.settings.get("ai_max_tokens", 32768)
         saved_tone = self.settings.get("ai_tone", "技术博主风")
@@ -1154,7 +1157,7 @@ class MainWindow(QMainWindow):
         self.settings_model.setEditable(True)
         self.settings_model.lineEdit().setPlaceholderText("选择或输入模型名")
         models = AIRewriter.supported_models()
-        saved_model = self.settings.get("ai_model", "gpt-4o-mini")
+        saved_model = self.settings.get("ai_model", DEFAULT_MODEL)
         found = False
         for m in models:
             self.settings_model.addItem(m["label"], m)
@@ -1313,41 +1316,45 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self, dialog):
         api_key = self.settings_api_key.text().strip()
-        model_text = self.settings_model.currentText().strip()
         model_data = self.settings_model.currentData()
-        known_labels = {m["label"] for m in AIRewriter.supported_models()}
 
         if model_data and model_data.get("value") not in ("custom", ""):
             model = model_data["value"]
-            api_base = self.settings_api_base.text().strip() or model_data["base"]
+            preset_base = model_data["base"]
         else:
-            if model_text and model_text not in known_labels:
-                model = model_text
-            else:
-                model = self.settings.get("ai_model", "deepseek-v4-pro") or "deepseek-v4-pro"
-            api_base = self.settings_api_base.text().strip() or "https://api.deepseek.com/v1"
+            # 下拉框可编辑：用户可能选中预设（拿到 label）也可能手输模型名，
+            # 统一交给 resolve_model_name 还原，避免把 label 当模型名发出去。
+            model = resolve_model_name(self.settings_model.currentText())
+            preset_base = next(
+                (m["base"] for m in AIRewriter.supported_models() if m["value"] == model),
+                "",
+            )
+        api_base = self.settings_api_base.text().strip() or preset_base or DEFAULT_API_BASE
 
-        if api_key:
-            self.settings.set_encrypted("ai_api_key", api_key)
-        self.settings.set("ai_model", model)
-        self.settings.set("ai_api_base", api_base)
+        with self.settings.batch():
+            if api_key:
+                self.settings.set_encrypted("ai_api_key", api_key)
+            self.settings.set("ai_model", model)
+            self.settings.set("ai_api_base", api_base)
+
+            self.settings.set("ai_temperature", self.settings_temperature.value())
+            self.settings.set("ai_max_tokens", self.settings_max_tokens.value())
+            self.settings.set("ai_tone", self.tone_combo.currentText())
+            self.settings.set("ai_tone_custom", self._custom_tone_text)
+            self.settings.set("ai_custom_prompt", self.settings_custom_prompt.toPlainText())
+            self.settings.set("ai_use_custom_prompt", self.settings_use_custom.isChecked())
+
+            self.settings.set("http_proxy", self.settings_proxy.text().strip())
+            self.settings.set("image_compress", self.settings_compress.isChecked())
+            self.settings.set("image_max_width", self.settings_max_width.value())
 
         temperature = self.settings_temperature.value()
         max_tokens = self.settings_max_tokens.value()
-        self.settings.set("ai_temperature", temperature)
-        self.settings.set("ai_max_tokens", max_tokens)
-        self.settings.set("ai_tone", self.tone_combo.currentText())
-        self.settings.set("ai_tone_custom", self._custom_tone_text)
-        self.settings.set("ai_custom_prompt", self.settings_custom_prompt.toPlainText())
-        self.settings.set("ai_use_custom_prompt", self.settings_use_custom.isChecked())
 
         proxy = self.settings_proxy.text().strip()
-        self.settings.set("http_proxy", proxy)
         import http_client
         http_client.set_proxy(proxy)
 
-        self.settings.set("image_compress", self.settings_compress.isChecked())
-        self.settings.set("image_max_width", self.settings_max_width.value())
         import image_processor
         image_processor.configure(
             enabled=self.settings_compress.isChecked(),
@@ -1897,38 +1904,10 @@ class MainWindow(QMainWindow):
         dlg = PublishDialog(self, content, default_title)
         dlg.exec()
 
-    def _embed_images_base64(self, markdown: str) -> str:
-        import base64 as _b64
-        import re as _re
-        img_re = _re.compile(r'!\[(.*?)\]\((.+?)(?:\s+"[^"]*")?\)')
-
-        def _replace(m):
-            alt = m.group(1)
-            url = m.group(2)
-            if url.startswith("data:"):
-                return m.group(0)
-            try:
-                p = Path(url)
-                if p.exists():
-                    data = p.read_bytes()
-                else:
-                    import httpx as _hx
-                    resp = _hx.get(url, timeout=30.0, follow_redirects=True)
-                    resp.raise_for_status()
-                    data = resp.content
-                b64 = _b64.b64encode(data).decode()
-                ext = p.suffix.lower() if p.suffix else ".png"
-                mime_map = {
-                    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                    ".png": "image/png", ".gif": "image/gif",
-                    ".webp": "image/webp",
-                }
-                mime = mime_map.get(ext, "image/png")
-                return f"![{alt}](data:{mime};base64,{b64})"
-            except Exception:
-                return m.group(0)
-
-        return img_re.sub(_replace, markdown)
+    @staticmethod
+    def _embed_images_base64(markdown: str) -> str:
+        from image_base64 import embed_images
+        return embed_images(markdown)
 
 
 class MetaWorker(QThread):

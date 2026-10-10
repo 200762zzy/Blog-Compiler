@@ -12,3 +12,6 @@ venv/
 config.json
 config.enc
 *.exe
+.pytest_cache/
+.pytest_tmp/
+.build-log.txt

@@ -3,6 +3,20 @@ import xmlrpc.client
 from publishers.base import BasePublisher, PublishResult
 
 
+def _read_api_key(settings) -> str:
+    """API Key 应加密存储；老配置里的明文也照常读取，不让用户莫名掉登录。"""
+    if hasattr(settings, "get_cnblogs_api_key"):
+        return settings.get_cnblogs_api_key() or ""
+    return settings.get("cnblogs_api_key", "") or ""
+
+
+def _write_api_key(settings, value: str):
+    if hasattr(settings, "set_cnblogs_api_key"):
+        settings.set_cnblogs_api_key(value)
+    else:
+        settings.set("cnblogs_api_key", value)
+
+
 class CnblogsPublisher(BasePublisher):
     name = "博客园"
 
@@ -15,12 +29,12 @@ class CnblogsPublisher(BasePublisher):
 
     def _restore(self):
         self._username = self.settings.get("cnblogs_username", "")
-        self._api_key = self.settings.get("cnblogs_api_key", "")
+        self._api_key = _read_api_key(self.settings)
         self._blog_id = self.settings.get("cnblogs_blog_id", "")
 
     def _save(self):
         self.settings.set("cnblogs_username", self._username)
-        self.settings.set("cnblogs_api_key", self._api_key)
+        _write_api_key(self.settings, self._api_key)
         self.settings.set("cnblogs_blog_id", self._blog_id)
 
     def _get_endpoint(self) -> str:

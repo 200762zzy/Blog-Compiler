@@ -27,14 +27,14 @@ def client(**kwargs) -> httpx.Client:
 
 def get(url, **kwargs):
     with client(**kwargs) as c:
-        return c.get(url)
+        return c.get(url, **kwargs)
 
 
 def post(url, **kwargs):
     with client(**kwargs) as c:
-        return c.post(url)
+        return c.post(url, **kwargs)
 
 
 def put(url, **kwargs):
     with client(**kwargs) as c:
-        return c.put(url)
+        return c.put(url, **kwargs)

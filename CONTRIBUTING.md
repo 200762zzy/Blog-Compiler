@@ -48,12 +48,22 @@ pip install -r requirements.txt
 py main.py
 ```
 
+跑测试（可选，开发时需要先装测试依赖）：
+
+```bash
+pip install -r requirements-dev.txt
+py -m pytest -q
+```
+
 打包为 exe（可选）：
 
 ```bash
 py build.py
-# 输出: dist/BlogCompiler.exe (~236 MB, 含 QtWebEngine)
+# 输出: dist/BlogCompiler.exe (~77 MB)
 ```
+
+> 登录改用系统 WebView2，安装包不再包含 QtWebEngine，因此体积从早期的
+> 236 MB 降到约 77 MB。若系统缺少 WebView2，可在界面中手动粘贴 Cookie。
 
 ---
 
@@ -74,9 +84,11 @@ Blog-Compiler/
 ├── publishers/           # 多平台发布器
 │   ├── base.py           # 发布器基类
 │   ├── csdn.py           # CSDN 发布（x-ca-signature）
+│   ├── csdn_sign.py      # CSDN x-ca 签名（单一来源，勿另写一份）
 │   ├── csdn_image.py     # CSDN 原生图床（华为 OBS）
 │   ├── juejin.py         # 掘金发布（含 ByteDance ImageX 上传）
 │   └── cnblogs.py        # 博客园发布（XML-RPC）
+├── image_base64.py       # 图片转 data URI
 ├── requirements.txt
 └── .github/
     ├── workflows/build.yml
@@ -84,6 +96,8 @@ Blog-Compiler/
 ```
 
 修改某个平台的行为时，通常只需改动 `publishers/` 下对应的文件；涉及 UI 的改动集中在 `app.py`。
+其他约定：网络调用一律走 `http_client`（否则代理不生效），图片正则一律用
+`image_handler.IMAGE_PATTERN`，CSDN 签名一律用 `publishers/csdn_sign.py`。
 
 ---
 

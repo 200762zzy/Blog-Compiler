@@ -1,5 +1,6 @@
 import json
 import mimetypes
+import re
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,65 @@ _HEADERS_BASE = {
 
 def _build_cookie_header(cookies: dict) -> str:
     return "; ".join(f"{k}={v.get('value', v) if isinstance(v, dict) else v}" for k, v in cookies.items())
+
+
+#: 掘金对 brief_content 的硬性要求：少于这个长度接口会直接报错。
+_BRIEF_MIN = 50
+#: 摘要超过这个长度会被接口截断，所以自己先截。
+_BRIEF_MAX = 100
+#: 从正文里摘取摘要时，单段最多取这么多字。
+_BRIEF_EXCERPT = 80
+
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_CODE_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_FORMATTING_RE = re.compile(r"[*_`>#]")
+
+
+def _extract_summary_text(markdown: str) -> str:
+    """从 Markdown 正文里取一段适合当摘要的纯文本。
+
+    摘要会显示在信息流里，所以要去掉 Markdown 记号（图片、链接、代码块、
+    加粗标记），并且跳过标题行——只截正文开头的话，很可能只截到标题。
+    """
+    fallback = ""
+    in_fence = False
+
+    for raw in (markdown or "").splitlines():
+        line = raw.strip()
+        if _CODE_FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or not line:
+            continue
+        if line.startswith("#"):
+            if not fallback:
+                fallback = line.lstrip("#").strip()
+            continue
+
+        text = _IMAGE_RE.sub("", line)
+        text = _LINK_RE.sub(r"\1", text)
+        text = _FORMATTING_RE.sub("", text).strip()
+        if len(text) >= 10:
+            return text
+        if text and not fallback:
+            fallback = text
+
+    return fallback
+
+
+def _pad_brief(brief: str) -> str:
+    """把摘要补到掘金要求的最小长度；过短时截到上限。"""
+    if len(brief) > _BRIEF_MAX:
+        return brief[:_BRIEF_MAX]
+    while 0 < len(brief) < _BRIEF_MIN:
+        brief += brief[: min(_BRIEF_MIN - len(brief), len(brief))]
+    return brief
+
+
+def build_brief_content(content: str) -> str:
+    """给掘金生成合规的 brief_content（纯文本，长度落在 50~100 之间）。"""
+    return _pad_brief(_extract_summary_text(content))
 
 
 class JuejinPublisher(BasePublisher):
@@ -152,24 +212,33 @@ class JuejinPublisher(BasePublisher):
         return results[0].get("ImageUrl", "") or ""
 
     def _handle_images(self, content: str) -> str:
+        """把正文里的本地图片传到掘金图床，并替换成返回的地址。
+
+        必须用同一个图片正则来「提取」和「替换」，否则两边对图片写法的理解
+        会不一致——之前用裸字符串替换，带 title 的图片（`![](path "标题")`）
+        上传完却替换不到，正文里留的仍是本地路径。
+        """
         from image_handler import ImageHandler
-        images = ImageHandler.extract_images(content)
-        local_images = [p for p in images if Path(p).exists()]
+
+        local_images = [p for p in ImageHandler.extract_images(content) if Path(p).exists()]
         if not local_images:
             return content
 
         mapping = {}
         for path in local_images:
             try:
-                url = self._upload_image(path)
-                mapping[path] = url
-            except Exception as e:
+                mapping[path] = self._upload_image(path)
+            except Exception:
                 continue
 
-        for local_path, remote_url in mapping.items():
-            content = content.replace(f"({local_path})", f"({remote_url})")
-            content = content.replace(f'"{local_path}"', f'"{remote_url}"')
-        return content
+        def replacer(match):
+            target = match.group(2)
+            remote = mapping.get(target)
+            if not remote:
+                return match.group(0)
+            return f"![{match.group(1)}]({remote})"
+
+        return ImageHandler.replace_images(content, replacer)
 
     def publish(self, title: str, content: str, **kwargs) -> PublishResult:
         if not self._cookies:
@@ -180,9 +249,7 @@ class JuejinPublisher(BasePublisher):
         category_id = kwargs.get("category_id", _DEFAULT_CATEGORY_ID)
         tag_ids = kwargs.get("tag_ids", _DEFAULT_TAG_IDS)
 
-        brief = content[:100].strip()
-        if len(brief) < 50:
-            brief = (brief + "。" * 10)[:100]
+        brief = build_brief_content(content)
 
         cookie_str = _build_cookie_header(self._cookies)
         headers = {**_HEADERS_BASE, "cookie": cookie_str}

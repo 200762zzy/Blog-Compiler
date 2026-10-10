@@ -1,8 +1,4 @@
-import uuid
-import hmac
-import hashlib
 import json
-from base64 import b64encode
 from urllib.parse import urlparse
 
 import httpx
@@ -11,6 +7,7 @@ import mistune
 import http_client
 
 from publishers.base import BasePublisher, PublishResult
+from publishers.csdn_sign import ca_headers
 
 
 _SAVE_URL = "https://bizapi.csdn.net/blog-console-api/v3/mdeditor/saveArticle"
@@ -19,19 +16,6 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-_CA_KEY = "203803574"
-_CA_SECRET = "9znpamsyl2c7cdrr9sas0le9vbc3r6ba"
-
-
-def _build_sign(method: str, path: str, nonce: str, ca_key: str, ca_secret: str) -> str:
-    to_enc = (
-        f"{method}\n*/*\n\napplication/json\n\n"
-        f"x-ca-key:{ca_key}\n"
-        f"x-ca-nonce:{nonce}\n"
-        f"{path}"
-    )
-    raw = hmac.new(ca_secret.encode(), to_enc.encode(), hashlib.sha256).digest()
-    return b64encode(raw).decode()
 
 
 class CsdnPublisher(BasePublisher):
@@ -77,62 +61,56 @@ class CsdnPublisher(BasePublisher):
         if not self._cookies:
             return PublishResult(False, self.name, error="未登录 CSDN")
 
-        ca_key = self.settings.get("ca_key") or _CA_KEY
-        ca_secret = self.settings.get("ca_secret") or _CA_SECRET
+        ca_key = self.settings.get("ca_key") or None
+        ca_secret = self.settings.get("ca_secret") or None
         tags = kwargs.get("tags", "")
         categories = kwargs.get("categories", "")
         article_type = kwargs.get("article_type", "original")
         draft = kwargs.get("draft", False)
         article_id = str(kwargs.get("article_id", "") or "")
 
-        nonce = str(uuid.uuid4())
         parsed = urlparse(_SAVE_URL)
         path = parsed.path + ("?" + parsed.query if parsed.query else "")
-        sign = _build_sign("POST", path, nonce, ca_key, ca_secret)
-
-        headers = {
-            "x-ca-key": ca_key,
-            "x-ca-nonce": nonce,
-            "x-ca-signature": sign,
-            "x-ca-signature-headers": "x-ca-key,x-ca-nonce",
-            "content-type": "application/json",
-            "origin": "https://editor.csdn.net",
-            "referer": "https://editor.csdn.net/",
-            "user-agent": _USER_AGENT,
-        }
+        headers = ca_headers(
+            path,
+            method="POST",
+            ca_key=ca_key,
+            ca_secret=ca_secret,
+            user_agent=_USER_AGENT,
+        )
 
         image_warnings = []
         if content:
             from publishers.csdn_image import process_markdown_images
             content, image_warnings = process_markdown_images(content, self._cookies)
 
-        html_content = mistune.html(content)
-        payload = {
-            "title": title,
-            "markdowncontent": content,
-            "content": html_content,
-            "readType": "public",
-            "tags": tags or " ",
-            "status": 2 if draft else 0,
-            "categories": categories,
-            "type": article_type,
-            "original_link": "",
-            "authorized_status": False,
-            "not_auto_saved": "1",
-            "source": "pc_mdeditor",
-            "cover_images": [],
-            "cover_type": 0,
-            "is_new": 0 if article_id else 1,
-            "vote_id": 0,
-            "pubStatus": "draft" if draft else "publish",
-        }
-        if article_id:
-            try:
-                payload["id"] = int(article_id)
-            except ValueError:
-                payload["id"] = article_id
-
         try:
+            html_content = mistune.html(content)
+            payload = {
+                "title": title,
+                "markdowncontent": content,
+                "content": html_content,
+                "readType": "public",
+                "tags": tags or " ",
+                "status": 2 if draft else 0,
+                "categories": categories,
+                "type": article_type,
+                "original_link": "",
+                "authorized_status": False,
+                "not_auto_saved": "1",
+                "source": "pc_mdeditor",
+                "cover_images": [],
+                "cover_type": 0,
+                "is_new": 0 if article_id else 1,
+                "vote_id": 0,
+                "pubStatus": "draft" if draft else "publish",
+            }
+            if article_id:
+                try:
+                    payload["id"] = int(article_id)
+                except ValueError:
+                    payload["id"] = article_id
+
             with http_client.client(cookies=self._cookies, timeout=30.0) as client:
                 resp = client.post(_SAVE_URL, headers=headers, json=payload)
 

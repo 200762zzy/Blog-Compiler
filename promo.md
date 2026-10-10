@@ -116,36 +116,3 @@ https://github.com/200762zzy/Blog-Compiler
 
 </div>
 
----
-
-## 📣 附：各平台短文案
-
-### 掘金 / CSDN
-
-> **标题**：我做了个开源工具，把 Typora 笔记一键发到 CSDN / 掘金 / 博客园
->
-> 写博客最烦发之前的准备：图片本地路径要传图床、笔记语气要润色、格式要调……一篇能折腾半小时。
->
-> 于是做了 **Blog Compiler**：拖入 `.md` → AI 改写（流式）→ 图片自动上传/压缩 → 一键发布三大平台。CSDN 图片直传自家 CDN，不再「转存失败」；还支持多账号、AI 生成标题标签、更新已发布文章。
->
-> Windows 双击即用，开源免费：https://github.com/200762zzy/Blog-Compiler
->
-> 欢迎 Star ⭐ 和提 Issue！
-
-### V2EX（分享创造）
-
-> **[分享创造] Blog Compiler — Markdown 笔记一键发布到 CSDN/掘金/博客园**
->
-> 痛点：md 图片是本地路径，发 CSDN 要么转存失败要么手动传图床。
->
-> 这个工具把「读 → AI 改写 → 传图 → 发布」串成一步，CSDN 走自家 OSS 图床、掘金走 ImageX，登录用系统 WebView2 扫码。
->
-> 开源 MIT，欢迎反馈：https://github.com/200762zzy/Blog-Compiler
-
-### Show HN / dev.to
-
-> **Show HN: Blog Compiler – Turn Markdown notes into published blog posts with AI**
->
-> A Windows desktop tool that takes a Typora `.md` file and handles the whole pipeline: AI rewriting (streaming), image re-hosting (CSDN native CDN / ByteDance ImageX), and one-click publishing to CSDN, Juejin and Cnblogs. Login uses the system WebView2, so the app is only ~77 MB.
->
-> Open source (MIT): https://github.com/200762zzy/Blog-Compiler — feedback and contributions welcome!

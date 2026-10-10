@@ -10,18 +10,96 @@ import http_client
 @dataclass
 class RewriteConfig:
     api_key: str = ""
-    api_base: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o-mini"
+    api_base: str = ""
+    model: str = ""
     temperature: float = 0.7
     max_tokens: int = 32768
     chunk_size: int = 8000
     system_prompt: str = ""
 
 
+#: 模型预设。列表第一项就是「未配置时的默认厂商」。
+#: 所有默认值都从这里取，不要在别处再写一份模型名，否则会出现
+#: 「界面显示一个厂商、实际请求发到另一个」这类矛盾。
+SUPPORTED_MODELS: list[dict] = [
+    {"label": "OpenAI GPT-5.5", "value": "gpt-5.5", "base": "https://api.openai.com/v1"},
+    {"label": "OpenAI GPT-5.4-mini", "value": "gpt-5.4-mini", "base": "https://api.openai.com/v1"},
+    {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro", "base": "https://api.deepseek.com/v1"},
+    {"label": "DeepSeek-Flash", "value": "deepseek-flash", "base": "https://api.deepseek.com/v1"},
+    {"label": "Kimi K3", "value": "kimi-k3", "base": "https://api.moonshot.cn/v1"},
+    {"label": "Kimi K2.6", "value": "kimi-k2.6", "base": "https://api.moonshot.cn/v1"},
+    {"label": "通义 Qwen3.8-Max", "value": "qwen3.8-max", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+    {"label": "通义 Qwen3.8-Flash", "value": "qwen3.8-flash", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+    {"label": "智谱 GLM-5.3", "value": "glm-5.3", "base": "https://open.bigmodel.cn/api/paas/v4"},
+    {"label": "智谱 GLM-4.7", "value": "glm-4.7", "base": "https://open.bigmodel.cn/api/paas/v4"},
+    {"label": "硅基流动 (点刷新获取)", "value": "custom", "base": "https://api.siliconflow.cn/v1"},
+    {"label": "火山方舟 (点刷新获取)", "value": "custom", "base": "https://ark.cn-beijing.volces.com/api/v3"},
+    {"label": "OpenRouter (点刷新获取)", "value": "custom", "base": "https://openrouter.ai/api/v1"},
+    {"label": "Ollama 本地 (点刷新获取)", "value": "custom", "base": "http://localhost:11434/v1"},
+    {"label": "自定义 (可编辑)", "value": "custom", "base": ""},
+]
+
+DEFAULT_MODEL = SUPPORTED_MODELS[0]["value"]
+DEFAULT_API_BASE = SUPPORTED_MODELS[0]["base"]
+
+
+def default_config(api_key: str = "") -> RewriteConfig:
+    """带默认厂商的配置对象，免得默认值散落各处而互相矛盾。"""
+    return RewriteConfig(
+        api_key=api_key, api_base=DEFAULT_API_BASE, model=DEFAULT_MODEL
+    )
+
+
+def resolve_model_name(model_text: str) -> str:
+    """把下拉框里的文本解析成模型 ID。
+
+    下拉框是可编辑的：用户选中预设项时拿到的是 label（如 "OpenAI GPT-5.5"），
+    这个文本不能直接当模型名发给 API，要还原成 value；
+    只有真正手输的自定义名字才原样使用。
+    """
+    candidate = (model_text or "").strip()
+    if not candidate:
+        return DEFAULT_MODEL
+    for entry in SUPPORTED_MODELS:
+        if candidate in (entry["label"], entry["value"]):
+            return entry["value"]
+    return candidate
+
+
 CONTINUATION_PROMPT = """请继续保持与上文一致的风格和语气，直接接着改写下面的内容。
 不要重复前文内容，不要加总结性语句，直接从断点处继续：
 
 {content}"""
+
+
+def _error_detail(resp) -> str:
+    detail = f"HTTP {resp.status_code}"
+    try:
+        detail += f"\n响应: {resp.json()}"
+    except Exception:
+        detail += f"\n响应: {resp.text[:500]}"
+    return detail
+
+
+def needs_max_completion_tokens(resp) -> bool:
+    """判断这次失败是不是「不接受 max_tokens」造成的。
+
+    OpenAI 的新一代模型（GPT-5 系列等）把 max_tokens 换成了
+    max_completion_tokens，旧参数名会直接返回 400。只在错误信息明确提到
+    新参数名时才回退，避免把真正的错误（如 Key 无效）吞掉重试。
+    """
+    if getattr(resp, "status_code", 0) != 400:
+        return False
+    body = getattr(resp, "text", "") or ""
+    return "max_completion_tokens" in body
+
+
+def retry_with_max_completion_tokens(payload: dict) -> dict:
+    """把 payload 里的 max_tokens 换成新参数名，保留其余字段与顺序。"""
+    retried = {}
+    for key, value in payload.items():
+        retried["max_completion_tokens" if key == "max_tokens" else key] = value
+    return retried
 
 
 def _split_into_blocks(content: str) -> list[str]:
@@ -71,7 +149,11 @@ def _split_into_blocks(content: str) -> list[str]:
 
 class AIRewriter:
     def __init__(self, config: RewriteConfig | None = None):
-        self.config = config or RewriteConfig()
+        self.config = config or default_config()
+        if not self.config.api_base:
+            self.config.api_base = DEFAULT_API_BASE
+        if not self.config.model:
+            self.config.model = DEFAULT_MODEL
         self.last_error = ""
         self._cancelled = False
         self._client = http_client.client(timeout=120.0)
@@ -131,17 +213,11 @@ class AIRewriter:
 
         return "\n\n".join(all_parts)
 
-    def _stream_call(self, content: str, is_continuation: bool, on_chunk) -> str:
-        self.last_error = ""
-        headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "Content-Type": "application/json",
-        }
+    def _request_payload(self, content: str, is_continuation: bool, **extra) -> dict:
         system_content = self.config.system_prompt
         if is_continuation:
             system_content = "你正在继续改写一篇文章，保持风格一致，直接继续。"
-
-        payload = {
+        return {
             "model": self.config.model,
             "messages": [
                 {"role": "system", "content": system_content},
@@ -149,8 +225,16 @@ class AIRewriter:
             ],
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "stream": True,
+            **extra,
         }
+
+    def _stream_call(self, content: str, is_continuation: bool, on_chunk) -> str:
+        self.last_error = ""
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = self._request_payload(content, is_continuation, stream=True)
 
         url = f"{self.config.api_base.rstrip('/')}/chat/completions"
         collected = []
@@ -158,13 +242,26 @@ class AIRewriter:
         with self._client.stream("POST", url, json=payload, headers=headers) as resp:
             if resp.status_code != 200:
                 resp.read()
-                detail = f"HTTP {resp.status_code}"
-                try:
-                    detail += f"\n响应: {resp.json()}"
-                except Exception:
-                    detail += f"\n响应: {resp.text[:500]}"
-                self.last_error = detail
-                raise RuntimeError(f"API 请求失败\n{detail}")
+                if needs_max_completion_tokens(resp):
+                    payload = retry_with_max_completion_tokens(payload)
+                    resp = self._client.post(url, json=payload, headers=headers)
+                    if resp.status_code != 200:
+                        self.last_error = _error_detail(resp)
+                        raise RuntimeError(f"API 请求失败\n{self.last_error}")
+                    ctype = resp.headers.get("content-type", "")
+                    if "event-stream" not in ctype:
+                        data = resp.json()
+                        choices = data.get("choices", [])
+                        if not choices:
+                            raise RuntimeError(f"API 返回异常 (无 choices): {data}")
+                        text = choices[0]["message"]["content"].strip()
+                        if on_chunk:
+                            on_chunk(text)
+                        return text
+                    return self._consume_stream(resp, on_chunk, collected)
+
+                self.last_error = _error_detail(resp)
+                raise RuntimeError(f"API 请求失败\n{self.last_error}")
 
             ctype = resp.headers.get("content-type", "")
             if "event-stream" not in ctype:
@@ -177,29 +274,32 @@ class AIRewriter:
                     on_chunk(text)
                 return text
 
-            for line in resp.iter_lines():
-                if self._cancelled:
-                    break
-                if not line:
-                    continue
-                data_str = line[5:].strip() if line.startswith("data:") else line.strip()
-                if not data_str or data_str == "[DONE]":
-                    continue
-                try:
-                    obj = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                choices = obj.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                piece = delta.get("content")
-                if piece:
-                    collected.append(piece)
-                    if on_chunk:
-                        on_chunk(piece)
-                if choices[0].get("finish_reason") == "length":
-                    self.last_error = "output truncated by token limit, consider increasing max_tokens"
+            return self._consume_stream(resp, on_chunk, collected)
+
+    def _consume_stream(self, resp, on_chunk, collected: list) -> str:
+        for line in resp.iter_lines():
+            if self._cancelled:
+                break
+            if not line:
+                continue
+            data_str = line[5:].strip() if line.startswith("data:") else line.strip()
+            if not data_str or data_str == "[DONE]":
+                continue
+            try:
+                obj = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            choices = obj.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                collected.append(piece)
+                if on_chunk:
+                    on_chunk(piece)
+            if choices[0].get("finish_reason") == "length":
+                self.last_error = "output truncated by token limit, consider increasing max_tokens"
 
         return "".join(collected)
 
@@ -209,34 +309,18 @@ class AIRewriter:
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        system_content = self.config.system_prompt
-        if is_continuation:
-            system_content = "你正在继续改写一篇文章，保持风格一致，直接继续。"
+        payload = self._request_payload(content, is_continuation)
 
-        payload = {
-            "model": self.config.model,
-            "messages": [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": content},
-            ],
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-        }
+        url = f"{self.config.api_base.rstrip('/')}/chat/completions"
+        resp = self._client.post(url, json=payload, headers=headers)
 
-        resp = self._client.post(
-            f"{self.config.api_base.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-        )
+        if resp.status_code != 200 and needs_max_completion_tokens(resp):
+            payload = retry_with_max_completion_tokens(payload)
+            resp = self._client.post(url, json=payload, headers=headers)
 
         if resp.status_code != 200:
-            detail = f"HTTP {resp.status_code}"
-            try:
-                detail += f"\n响应: {resp.json()}"
-            except Exception:
-                detail += f"\n响应: {resp.text[:500]}"
-            self.last_error = detail
-            raise RuntimeError(f"API 请求失败\n{detail}")
+            self.last_error = _error_detail(resp)
+            raise RuntimeError(f"API 请求失败\n{self.last_error}")
 
         data = resp.json()
         choices = data.get("choices", [])
@@ -336,20 +420,4 @@ class AIRewriter:
 
     @staticmethod
     def supported_models() -> list[dict]:
-        return [
-            {"label": "OpenAI GPT-5.5", "value": "gpt-5.5", "base": "https://api.openai.com/v1"},
-            {"label": "OpenAI GPT-5.4-mini", "value": "gpt-5.4-mini", "base": "https://api.openai.com/v1"},
-            {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro", "base": "https://api.deepseek.com/v1"},
-            {"label": "DeepSeek-Flash", "value": "deepseek-flash", "base": "https://api.deepseek.com/v1"},
-            {"label": "Kimi K3", "value": "kimi-k3", "base": "https://api.moonshot.cn/v1"},
-            {"label": "Kimi K2.6", "value": "kimi-k2.6", "base": "https://api.moonshot.cn/v1"},
-            {"label": "通义 Qwen3.8-Max", "value": "qwen3.8-max", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-            {"label": "通义 Qwen3.8-Flash", "value": "qwen3.8-flash", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-            {"label": "智谱 GLM-5.3", "value": "glm-5.3", "base": "https://open.bigmodel.cn/api/paas/v4"},
-            {"label": "智谱 GLM-4.7", "value": "glm-4.7", "base": "https://open.bigmodel.cn/api/paas/v4"},
-            {"label": "硅基流动 (点刷新获取)", "value": "custom", "base": "https://api.siliconflow.cn/v1"},
-            {"label": "火山方舟 (点刷新获取)", "value": "custom", "base": "https://ark.cn-beijing.volces.com/api/v3"},
-            {"label": "OpenRouter (点刷新获取)", "value": "custom", "base": "https://openrouter.ai/api/v1"},
-            {"label": "Ollama 本地 (点刷新获取)", "value": "custom", "base": "http://localhost:11434/v1"},
-            {"label": "自定义 (可编辑)", "value": "custom", "base": ""},
-        ]
+        return SUPPORTED_MODELS

@@ -99,6 +99,16 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 - 复制到剪贴板，直接粘贴到编辑器
 - 各平台 Markdown 方言自动适配（CSDN 表格/代码块、掘金图片尺寸等）
 
+### 🚀 v3.1.1 新特性
+
+- **掘金图片修复** — 带标题的图片（`![](path "标题")`）此前上传成功却替换不到，正文里留的仍是本地路径，导致掘金上图片裂图
+- **掘金摘要修复** — 摘要不足 50 字时补不齐（只补到 12 字），掘金会直接拒绝发布；现在会提取正文首段并正确补足，同时去掉 Markdown 记号
+- **AI 配置修复** — 「设置」里的默认模型与保存后的实际模型此前不一致（界面显示 OpenAI、请求却发往 DeepSeek）；选中预设模型时也不再误把中文标签当模型名发出
+- **新模型兼容** — GPT-5 系列不接受 `max_tokens`，现在会自动改用新参数名重试
+- **CSDN 报错更清楚** — HTML 转换失败不再绕过错误处理，日志里能看到具体原因
+- **博客园 API Key 加密存储** — 此前是明文存在配置文件里，老配置会自动迁移
+- **配置写入优化** — 保存设置从 12 次写盘降到 1 次，账号切换从 4 次降到 1 次
+
 ### 🚀 v3.1.0 新特性
 
 - **登录改用系统 WebView2** — 不再内置 QtWebEngine，安装包从 **236 MB 降到 ~77 MB**，仍保留扫码登录
@@ -150,7 +160,7 @@ Typora 写笔记，CSDN 发博客，中间差了好几步？
 
 ### 下载即用
 
-[![Download](https://img.shields.io/badge/Download-v3.1.0-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
+[![Download](https://img.shields.io/badge/Download-v3.1.1-2ea44f?style=for-the-badge)](https://github.com/200762zzy/Blog-Compiler/releases/latest/download/BlogCompiler.exe)
 
 1. 下载 `BlogCompiler.exe`
 2. 双击运行（无需安装）

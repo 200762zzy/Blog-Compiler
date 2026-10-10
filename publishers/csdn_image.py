@@ -11,12 +11,9 @@ the one used by CSDN's own editor (appName=direct_blog_markdown):
   3. response data.imageUrl -> https://img-blog.csdnimg.cn/direct/...
 """
 
-import hashlib
-import hmac
 import json
 import re
 import uuid
-from base64 import b64encode
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,6 +22,7 @@ import httpx
 import http_client
 
 from image_handler import IMAGE_PATTERN
+from publishers.csdn_sign import ca_headers
 
 _BIZ = "https://bizapi.csdn.net"
 _SIGN_PATH = "/resource-api/v1/image/direct/upload/signature"
@@ -33,8 +31,6 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-_CA_KEY = "203803574"
-_CA_SECRET = "9znpamsyl2c7cdrr9sas0le9vbc3r6ba"
 _CSDN_HOSTS = ("csdnimg.cn", "csdn.net")
 
 _MIME = {
@@ -53,39 +49,23 @@ def _cookie_dict(cookies) -> dict:
     }
 
 
-def _ca_headers(nonce: str, path: str) -> dict:
-    to_enc = (
-        f"POST\n*/*\n\napplication/json\n\n"
-        f"x-ca-key:{_CA_KEY}\n"
-        f"x-ca-nonce:{nonce}\n"
-        f"{path}"
-    )
-    sig = b64encode(
-        hmac.new(_CA_SECRET.encode(), to_enc.encode(), hashlib.sha256).digest()
-    ).decode()
-    return {
-        "x-ca-key": _CA_KEY,
-        "x-ca-nonce": nonce,
-        "x-ca-signature": sig,
-        "x-ca-signature-headers": "x-ca-key,x-ca-nonce",
-        "Accept": "*/*",
-        "content-type": "application/json",
-        "Origin": "https://editor.csdn.net",
-        "Referer": "https://editor.csdn.net/",
-        "User-Agent": _USER_AGENT,
-    }
-
-
 def _guess_ext(target: str) -> str:
     path = urlparse(target).path
     ext = Path(path).suffix.lstrip(".").lower()
     return ext if ext in _MIME else "png"
 
 
-def _fetch_signature(client: httpx.Client, ext: str) -> dict:
+def _fetch_signature(client: httpx.Client, ext: str, ca_key=None, ca_secret=None) -> dict:
     resp = client.post(
         _BIZ + _SIGN_PATH,
-        headers=_ca_headers(str(uuid.uuid4()), _SIGN_PATH),
+        headers=ca_headers(
+            _SIGN_PATH,
+            method="POST",
+            nonce=str(uuid.uuid4()),
+            ca_key=ca_key,
+            ca_secret=ca_secret,
+            user_agent=_USER_AGENT,
+        ),
         json={"imageTemplate": "", "appName": "direct_blog_markdown", "imageSuffix": ext},
         timeout=30.0,
     )
@@ -101,39 +81,45 @@ def _fetch_signature(client: httpx.Client, ext: str) -> dict:
     return data["data"]
 
 
-def upload_image_bytes(cookies: dict, image_data: bytes, ext: str, retries: int = 1) -> str:
+def _upload_form(info: dict) -> dict:
+    cp = info.get("customParam") or {}
+    return {
+        "key": info["filePath"],
+        "policy": info["policy"],
+        "signature": info["signature"],
+        "callbackBody": info.get("callbackBody", ""),
+        "callbackBodyType": info.get("callbackBodyType", ""),
+        "callbackUrl": info.get("callbackUrl", ""),
+        "AccessKeyId": info.get("accessId", ""),
+        "x:rtype": cp.get("rtype", ""),
+        "x:filePath": cp.get("filePath", ""),
+        "x:isAudit": str(cp.get("isAudit", 0)),
+        "x:x-image-app": cp.get("x-image-app", ""),
+        "x:type": cp.get("type", ""),
+        "x:x-image-suffix": cp.get("x-image-suffix", ""),
+        "x:username": cp.get("username", ""),
+    }
+
+
+def _post_to_obs(host: str, form: dict, image_data: bytes, ext: str) -> httpx.Response:
+    files = {"file": (f"image.{ext}", image_data, _MIME.get(ext, "image/png"))}
+    with http_client.client(timeout=60.0) as obs:
+        return obs.post(
+            host,
+            data=form,
+            files=files,
+            headers={"User-Agent": _USER_AGENT, "Referer": "https://editor.csdn.net/"},
+        )
+
+
+def _upload_image_bytes(cookies: dict, image_data: bytes, ext: str, retries: int = 1) -> str:
     """Upload raw bytes to CSDN CDN and return the img-blog.csdnimg.cn URL."""
     client = http_client.client(cookies=_cookie_dict(cookies), timeout=60.0, follow_redirects=True)
     last_error = ""
     try:
-        for attempt in range(1 + retries):
+        for _attempt in range(1 + retries):
             info = _fetch_signature(client, ext)
-            cp = info.get("customParam") or {}
-            form = {
-                "key": info["filePath"],
-                "policy": info["policy"],
-                "signature": info["signature"],
-                "callbackBody": info.get("callbackBody", ""),
-                "callbackBodyType": info.get("callbackBodyType", ""),
-                "callbackUrl": info.get("callbackUrl", ""),
-                "AccessKeyId": info.get("accessId", ""),
-                "x:rtype": cp.get("rtype", ""),
-                "x:filePath": cp.get("filePath", ""),
-                "x:isAudit": str(cp.get("isAudit", 0)),
-                "x:x-image-app": cp.get("x-image-app", ""),
-                "x:type": cp.get("type", ""),
-                "x:x-image-suffix": cp.get("x-image-suffix", ""),
-                "x:username": cp.get("username", ""),
-            }
-            files = {"file": (f"image.{ext}", image_data, _MIME.get(ext, "image/png"))}
-
-            with http_client.client(timeout=60.0) as obs:
-                resp = obs.post(
-                    info["host"],
-                    data=form,
-                    files=files,
-                    headers={"User-Agent": _USER_AGENT, "Referer": "https://editor.csdn.net/"},
-                )
+            resp = _post_to_obs(info["host"], _upload_form(info), image_data, ext)
 
             text = resp.text
             if "AccessDenied" in text:
@@ -162,13 +148,28 @@ def _is_csdn_url(target: str) -> bool:
     return any(host == h or host.endswith("." + h) for h in _CSDN_HOSTS)
 
 
+def _read_image_bytes(target: str) -> bytes:
+    path = Path(target)
+    if path.exists():
+        return path.read_bytes()
+    if target.startswith(("http://", "https://")):
+        with http_client.client(timeout=60.0, follow_redirects=True) as dl:
+            resp = dl.get(
+                target,
+                headers={"User-Agent": _USER_AGENT, "Referer": "https://img.scdn.io/"},
+            )
+        if resp.status_code != 200:
+            raise RuntimeError(f"下载外链图片失败 HTTP {resp.status_code}")
+        return resp.content
+    raise FileNotFoundError(f"图片不存在: {target}")
+
+
 def process_markdown_images(content: str, cookies: dict):
     """Replace local paths / external image URLs with CSDN-hosted URLs.
 
     Returns (new_content, warnings); failures keep the original URL and are
     listed in warnings so the caller can decide whether to abort.
     """
-    warnings = []
 
     def replacer(match):
         alt = match.group(1)
@@ -177,28 +178,12 @@ def process_markdown_images(content: str, cookies: dict):
             return match.group(0)
 
         try:
-            ext = _guess_ext(target)
-            path = Path(target)
-            if path.exists():
-                with open(target, "rb") as f:
-                    image_data = f.read()
-            elif target.startswith(("http://", "https://")):
-                with http_client.client(timeout=60.0, follow_redirects=True) as dl:
-                    resp = dl.get(
-                        target,
-                        headers={"User-Agent": _USER_AGENT, "Referer": "https://img.scdn.io/"},
-                    )
-                if resp.status_code != 200:
-                    raise RuntimeError(f"下载外链图片失败 HTTP {resp.status_code}")
-                image_data = resp.content
-            else:
-                return match.group(0)
-
-            url = upload_image_bytes(cookies, image_data, ext)
+            url = _upload_image_bytes(cookies, _read_image_bytes(target), _guess_ext(target))
             return f"![{alt}]({url})"
         except Exception as e:
             warnings.append(f"{target}: {e}")
             return match.group(0)
 
+    warnings = []
     new_content = re.sub(IMAGE_PATTERN, replacer, content)
     return new_content, warnings

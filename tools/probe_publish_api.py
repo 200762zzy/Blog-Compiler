@@ -13,7 +13,6 @@
 import io
 import json
 import sys
-import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -46,38 +45,22 @@ def probe_csdn(settings):
         print("CSDN Cookie 解析失败，跳过。")
         return
 
-    import hmac
-    import hashlib
-    from base64 import b64encode
+    from publishers.csdn import _SAVE_URL, _USER_AGENT
+    from publishers.csdn_sign import ca_headers
 
-    from publishers.csdn import _SAVE_URL, _CA_KEY, _CA_SECRET, _USER_AGENT
-
-    ca_key = settings.get("ca_key") or _CA_KEY
-    ca_secret = settings.get("ca_secret") or _CA_SECRET
+    ca_key = settings.get("ca_key") or None
+    ca_secret = settings.get("ca_secret") or None
 
     def save(payload):
-        nonce = str(uuid.uuid4())
         parsed = urlparse(_SAVE_URL)
         path = parsed.path + ("?" + parsed.query if parsed.query else "")
-        to_enc = (
-            f"POST\n*/*\n\napplication/json\n\n"
-            f"x-ca-key:{ca_key}\n"
-            f"x-ca-nonce:{nonce}\n"
-            f"{path}"
+        headers = ca_headers(
+            path,
+            method="POST",
+            ca_key=ca_key,
+            ca_secret=ca_secret,
+            user_agent=_USER_AGENT,
         )
-        sign = b64encode(
-            hmac.new(ca_secret.encode(), to_enc.encode(), hashlib.sha256).digest()
-        ).decode()
-        headers = {
-            "x-ca-key": ca_key,
-            "x-ca-nonce": nonce,
-            "x-ca-signature": sign,
-            "x-ca-signature-headers": "x-ca-key,x-ca-nonce",
-            "content-type": "application/json",
-            "origin": "https://editor.csdn.net",
-            "referer": "https://editor.csdn.net/",
-            "user-agent": _USER_AGENT,
-        }
         with http_client.client(cookies=cookies, timeout=30.0) as client:
             return client.post(_SAVE_URL, headers=headers, json=payload)
 
