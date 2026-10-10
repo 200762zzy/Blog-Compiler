@@ -1697,27 +1697,20 @@ class MainWindow(QMainWindow):
         return getattr(self, "_selected_tone", "技术博主风")
 
     def _set_tone_selection(self, tone: str):
-        """设置当前语气，并把它同步到下拉框的显示。"""
+        """设置当前语气，并把它同步到下拉框的显示。
+
+        下拉框只显示「自定义...」这个标签，不把整段 persona 文本铺进去——
+        文案通常很长，铺出来反而挤。选了哪个自定义内容是记在 _selected_tone
+        和 ai_tone_custom 里的，不靠下拉框显示来表达。
+        """
         if not isinstance(tone, str) or tone not in self.TONE_PRESETS + ("自定义...",):
             tone = "技术博主风"
         self._selected_tone = tone
 
         combo = self.tone_combo
         combo.blockSignals(True)
-        if tone == "自定义...":
-            custom = (self._custom_tone_text or "").strip()
-            if custom:
-                # 把自定义文本作为条目加进去，这样用户能看见自己选的是什么
-                existing = combo.findText(custom)
-                if existing < 0:
-                    combo.addItem(custom)
-                    existing = combo.count() - 1
-                combo.setCurrentIndex(existing)
-            else:
-                combo.setCurrentIndex(combo.findText("技术博主风"))
-        else:
-            idx = combo.findText(tone)
-            combo.setCurrentIndex(idx if idx >= 0 else 0)
+        idx = combo.findText(tone)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
 
     def _sanitize_tone(self, value) -> str:

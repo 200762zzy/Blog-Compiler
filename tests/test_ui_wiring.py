@@ -67,11 +67,23 @@ class TestToneCombo:
         prompt = main_window._build_system_prompt("alt", main_window._current_tone())
         assert "像一位耐心的师兄在讲解" in prompt
 
-    def test_combo_shows_the_custom_text(self, main_window, monkeypatch):
-        """下拉框要显示自定义内容，用户才看得出选的是什么。"""
-        self._stub_dialog(monkeypatch, text="简洁的工程笔记风")
+    def test_combo_shows_the_custom_label_not_the_whole_text(self, main_window, monkeypatch):
+        """下拉框只显示「自定义...」标签，不把整段 persona 铺出来。"""
+        self._stub_dialog(monkeypatch, text="很长的自定义语气描述" * 5)
         self._activate_custom(main_window)
-        assert main_window.tone_combo.currentText() == "简洁的工程笔记风"
+
+        assert main_window.tone_combo.currentText() == "自定义..."
+        assert main_window.tone_combo.count() == 5, "不该往下拉框里塞额外条目"
+
+    def test_custom_text_is_still_tracked_internally(self, main_window, monkeypatch):
+        """显示归显示，真正生效的文本要记在内部状态里。"""
+        self._stub_dialog(monkeypatch, text="像一位耐心的师兄")
+        self._activate_custom(main_window)
+
+        assert main_window._current_tone() == "自定义..."
+        assert main_window._custom_tone_text == "像一位耐心的师兄"
+        assert main_window.settings.get("ai_tone_custom") == "像一位耐心的师兄"
+        assert main_window.settings.get("ai_tone") == "自定义..."
 
     def test_changing_custom_text_updates_the_prompt(self, main_window, monkeypatch):
         self._stub_dialog(monkeypatch, text="第一版语气")
