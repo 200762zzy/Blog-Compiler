@@ -871,8 +871,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(tone_label)
         self.tone_combo = QComboBox()
         self.tone_combo.addItems(["技术博主风", "学生笔记风", "教程风", "轻松口语化", "自定义..."])
-        # 用 activated：重复选「自定义...」也要能触发（见 _on_tone_changed 的说明）
-        self.tone_combo.activated.connect(self._on_tone_changed)
+        # activated 是重载信号（int/str 两个版本），直接接方法会拿到**索引而不是文字**。
+        # 显式用 currentText() 取值；另外它能对「重复选同一条」发信号，
+        # 这正是「重复点自定义要能再弹窗」所需要的。
+        self.tone_combo.activated.connect(
+            lambda _=0: self._on_tone_changed(self.tone_combo.currentText())
+        )
         lay.addWidget(self.tone_combo)
 
         model_label = QLabel("使用模型")
