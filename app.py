@@ -22,7 +22,8 @@ def _panel_header(
     返回 (标题条, 布局, 展开按钮)，展开按钮可能为 None。
     """
     bar = QFrame()
-    bar.setObjectName("panelHeader")
+    # 让每个标题条带上自己的角色名，样式表据此给不同的强调色边
+    bar.setObjectName("panelHeader" if role == "plain" else f"header_{role}")
     lay = QHBoxLayout(bar)
     lay.setContentsMargins(12, 6, 8, 6)
     lay.setSpacing(8)
@@ -571,9 +572,11 @@ class MainWindow(QMainWindow):
         self.current_result = None
         self.drafts = []
         self._rewrite_gen = 0
+        self._custom_tone_text = ""
+        self._tone_before_custom = "技术博主风"
+        self._refine_mode = False
         init_publishers(self.settings)
         self._setup_ui()
-        self._custom_tone_text = ""
         self._restore_ai_settings()
         self._apply_settings()
         self._update_all_publisher_status()
@@ -831,6 +834,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.stats_detail)
 
     def _build_step_rewrite(self, lay: QVBoxLayout):
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
+
         title = QLabel("要改成什么风格？")
         title.setObjectName("taskTitle")
         lay.addWidget(title)
@@ -839,12 +844,35 @@ class MainWindow(QMainWindow):
         desc.setWordWrap(True)
         lay.addWidget(desc)
 
+        # 两种工作方式：从原文重写，或在已有结果上继续调整
+        self.rewrite_mode_group = QButtonGroup(self)
+        self.rb_mode_refine = QRadioButton("调整当前结果（保留已改的内容）")
+        self.rb_mode_rewrite = QRadioButton("改写原文（从头生成一版）")
+        self.rb_mode_refine.setChecked(True)
+        self.rewrite_mode_group.addButton(self.rb_mode_refine, 1)
+        self.rewrite_mode_group.addButton(self.rb_mode_rewrite, 2)
+        lay.addWidget(self.rb_mode_refine)
+        lay.addWidget(self.rb_mode_rewrite)
+
+        self.refine_label = QLabel("修改意见")
+        self.refine_label.setObjectName("taskLabel")
+        lay.addWidget(self.refine_label)
+        self.refine_input = QPlainTextEdit()
+        self.refine_input.setObjectName("refineInput")
+        self.refine_input.setPlaceholderText(
+            "例如：第二段压短一半；补一句踩坑经验；标题再直接一点\n"
+            "留空则按当前语气整篇重来"
+        )
+        self.refine_input.setFixedHeight(74)
+        lay.addWidget(self.refine_input)
+
         tone_label = QLabel("语气")
         tone_label.setObjectName("taskLabel")
         lay.addWidget(tone_label)
         self.tone_combo = QComboBox()
         self.tone_combo.addItems(["技术博主风", "学生笔记风", "教程风", "轻松口语化", "自定义..."])
-        self.tone_combo.currentTextChanged.connect(self._on_tone_changed)
+        # 用 activated：重复选「自定义...」也要能触发（见 _on_tone_changed 的说明）
+        self.tone_combo.activated.connect(self._on_tone_changed)
         lay.addWidget(self.tone_combo)
 
         model_label = QLabel("使用模型")
@@ -871,6 +899,38 @@ class MainWindow(QMainWindow):
         self.btn_restore_draft.clicked.connect(self._switch_draft)
         draft_row.addWidget(self.btn_restore_draft)
         lay.addLayout(draft_row)
+
+    # ---- 改写模式 --------------------------------------------------------
+    def _get_rewrite_mode(self) -> str:
+        return "refine" if self.rb_mode_refine.isChecked() else "rewrite"
+
+    @staticmethod
+    def _build_refine_prompt(base_prompt: str, instruction: str) -> str:
+        """把「改写」指令改写成「在现有结果上继续调整」的指令。
+
+        必须明确要求「不要重写全文」——否则模型会把整篇重新生成一遍，
+        用户前几轮的调整就白做了。
+        """
+        instruction = (instruction or "").strip()
+        if instruction:
+            task = (
+                f"用户对当前版本的修改意见是：\n{instruction}\n\n"
+                "请只针对这个意见做修改，其余内容、段落顺序、代码块和图片标记保持完全一致。"
+            )
+        else:
+            task = "用户没有提出具体意见，请保持内容与结构不变，仅按上述风格要求微调表达。"
+
+        return (
+            "你正在修改一篇已经成稿的文章。**不要重写全文**，"
+            "只做用户要求的改动，其余部分逐字保留。\n\n"
+            f"{task}\n\n"
+            f"风格要求（供参考，不要因此大改内容）：\n{base_prompt}\n\n"
+            "**重要**：\n"
+            "1. 输出修改后的完整文章，不要只输出改动片段\n"
+            "2. 代码块、表格、图片标记必须原样保留\n"
+            "3. 不要添加「以下是修改后的版本」这类前后缀说明\n"
+        )
+
 
     def _build_step_image(self, lay: QVBoxLayout):
         from PySide6.QtWidgets import QButtonGroup, QRadioButton
@@ -1362,6 +1422,18 @@ class MainWindow(QMainWindow):
             max_width=self.settings.get("image_max_width", 1600),
         )
 
+    def _update_model_hint(self):
+        """在「AI 改写」步骤里显示当前用的是哪个模型。"""
+        if not hasattr(self, "model_hint"):
+            return
+        rewriter = getattr(self, "ai_rewriter", None)
+        if rewriter is None or not rewriter.config.api_key:
+            self.model_hint.setText("⚠ 尚未配置 API Key，点右上角 ⚙ 去设置")
+            return
+        base = (rewriter.config.api_base or "").replace("https://", "").replace("http://", "")
+        base = base.rstrip("/")
+        self.model_hint.setText(f"当前：{rewriter.config.model}\n接口：{base}")
+
     def _update_status(self):
         count = len(self.file_paths)
         self.file_count_label.setText(f"文件: {count}")
@@ -1562,22 +1634,44 @@ class MainWindow(QMainWindow):
                 self._add_file(path)
 
     def _on_tone_changed(self, text: str):
-        if text == "自定义...":
-            from PySide6.QtWidgets import QInputDialog
-            prev = self.settings.get("ai_tone_custom", "")
-            new_text, ok = QInputDialog.getMultiLineText(
-                self, "自定义语气", "请输入 persona 描述：", prev
-            )
-            if ok and new_text.strip():
-                self._custom_tone_text = new_text.strip()
-                self.settings.set("ai_tone_custom", self._custom_tone_text)
-            elif ok:
-                prev_idx = self.tone_combo.findText("技术博主风")
-                if prev_idx >= 0:
-                    self.tone_combo.blockSignals(True)
-                    self.tone_combo.setCurrentIndex(prev_idx)
-                    self.tone_combo.blockSignals(False)
-            self.settings.set("ai_tone", self.tone_combo.currentText())
+        """语气下拉框的选择处理。
+
+        用 activated 而不是 currentTextChanged：combo 停在「自定义...」时，
+        再选一次同一个条目不会发 currentTextChanged，用户就得先切走再切回来。
+        activated 每次点击都会发，所以这里能稳定弹出窗口。
+        处理完把当前项切回预设，避免 combo 停在「自定义...」造成状态歧义。
+        """
+        if text != "自定义...":
+            self._tone_before_custom = text
+            self.settings.set("ai_tone", text)
+            return
+
+        from PySide6.QtWidgets import QInputDialog
+
+        prev = self.settings.get("ai_tone_custom", "")
+        new_text, ok = QInputDialog.getMultiLineText(
+            self, "自定义语气", "请输入 persona 描述（例如：像一位耐心的师兄在讲解）：", prev
+        )
+
+        if ok and new_text.strip():
+            self._custom_tone_text = new_text.strip()
+            self.settings.set("ai_tone_custom", self._custom_tone_text)
+            self.settings.set("ai_tone", "自定义...")
+        else:
+            # 取消：回到上次选中的预设
+            self.settings.set("ai_tone", self._tone_before_custom)
+
+        self._reset_tone_combo_to(self.settings.get("ai_tone", "技术博主风"))
+
+    def _reset_tone_combo_to(self, tone: str):
+        """把下拉框复位到指定语气，期间不触发信号。"""
+        target = tone if tone != "自定义..." else self._tone_before_custom
+        idx = self.tone_combo.findText(target)
+        if idx < 0:
+            idx = self.tone_combo.findText("技术博主风")
+        self.tone_combo.blockSignals(True)
+        self.tone_combo.setCurrentIndex(idx)
+        self.tone_combo.blockSignals(False)
 
     def _restore_ai_settings(self):
         api_key = self.settings.get_encrypted("ai_api_key")
@@ -1587,11 +1681,12 @@ class MainWindow(QMainWindow):
         max_tokens = self.settings.get("ai_max_tokens", 32768)
         saved_tone = self.settings.get("ai_tone", "技术博主风")
         self._custom_tone_text = self.settings.get("ai_tone_custom", "")
-        idx = self.tone_combo.findText(saved_tone)
-        if idx >= 0:
-            self.tone_combo.blockSignals(True)
-            self.tone_combo.setCurrentIndex(idx)
-            self.tone_combo.blockSignals(False)
+        # 记住「自定义」之前用的是哪个预设，取消时要退回去
+        self._tone_before_custom = (
+            saved_tone if saved_tone in ("技术博主风", "学生笔记风", "教程风", "轻松口语化")
+            else "技术博主风"
+        )
+        self._reset_tone_combo_to(saved_tone)
         if api_key:
             config = RewriteConfig(
                 api_key=api_key, api_base=api_base, model=model,
@@ -1603,6 +1698,7 @@ class MainWindow(QMainWindow):
             self.log("🤖 AI 配置已加载")
         else:
             self.ai_rewriter = None
+        self._update_model_hint()
 
     def _show_settings(self):
         dialog = QDialog(self)
@@ -1835,6 +1931,7 @@ class MainWindow(QMainWindow):
         self.ai_rewriter = AIRewriter(config)
         if self.current_content:
             self.btn_ai.setEnabled(True)
+        self._update_model_hint()
 
         self.log("✅ AI 设置已保存")
         dialog.accept()
@@ -1899,6 +1996,15 @@ class MainWindow(QMainWindow):
                 self._rewrite_selection(cursor)
                 return
 
+        # 「调整当前结果」：拿右边已改好的版本继续改，不回到原文重来
+        if self._get_rewrite_mode() == "refine":
+            current = self.rewritten_view.toPlainText().strip()
+            if not current:
+                self.log("ℹ️ 还没有可调整的结果，改为从原文改写一版")
+            else:
+                self._start_ai_rewrite(current, self._get_image_mode(), refine=True)
+                return
+
         mode = self._get_image_mode()
         rewrite_content = self.current_content
 
@@ -1942,12 +2048,24 @@ class MainWindow(QMainWindow):
         self.log(f"🖼️ 图片上传完成 ({len(mapping)} 张)")
         self._start_ai_rewrite(rewrite_content, mode)
 
-    def _start_ai_rewrite(self, content, mode):
-        system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
+    def _start_ai_rewrite(self, content, mode, refine: bool = False):
+        base_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
+        if refine:
+            system_prompt = self._build_refine_prompt(
+                base_prompt, self.refine_input.toPlainText()
+            )
+        else:
+            system_prompt = base_prompt
         self.ai_rewriter.config.system_prompt = system_prompt
 
-        self.log("🤖 开始 AI 改写...")
-        self.status_label.setText("AI 改写中...")
+        if refine:
+            instruction = self.refine_input.toPlainText().strip()
+            self.log(
+                "✏️ 基于当前结果调整：" + (instruction[:40] if instruction else "按语气整篇重来")
+            )
+        else:
+            self.log("🤖 开始 AI 改写...")
+        self.status_label.setText("AI 处理中...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.btn_ai.setText("取消改写")
@@ -1957,8 +2075,11 @@ class MainWindow(QMainWindow):
 
         self._rewrite_gen += 1
         gen = self._rewrite_gen
+        # 先抓下待处理内容再清面板：_begin_stream 会清空「改写后」，
+        # 而「调整当前结果」要读的正是它 —— 顺序反了就会把自己的输入清掉。
+        payload = content
         self._begin_stream()
-        self.rewrite_worker = RewriteWorker(self.ai_rewriter, content)
+        self.rewrite_worker = RewriteWorker(self.ai_rewriter, payload)
         self.rewrite_worker.chunk.connect(
             lambda t, g=gen: self._on_rewrite_chunk(t, g)
         )

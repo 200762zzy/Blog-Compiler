@@ -86,6 +86,7 @@ class TestTokenContract:
         "accent", "accent_hover", "accent_pressed", "accent_soft",
         "success", "warning", "danger", "info",
         "grad", "grad_hover",
+        "panel_original", "panel_rewritten", "panel_preview",
         "radius_sm", "radius_md", "radius_lg",
         "scroll_track", "scroll_handle", "scroll_handle_hover", "splitter",
     ]

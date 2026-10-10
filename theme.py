@@ -37,6 +37,23 @@ def _sheen(base: str, top_alpha: float, bottom_alpha: float) -> str:
     )
 
 
+def _mix(hex_a: str, hex_b: str, ratio: float) -> str:
+    """把两个颜色按比例混合，用来在暗色主题里"加一点点色相"。
+
+    纯靠明度做区分在暗色主题里行不通：底色已经接近纯黑，
+    只能挤出 0.2% 左右的亮度差，人眼看不出来。
+    所以在底色上掺一点偏向，让三个面板"色相不同"而不是"深浅不同"。
+    """
+    a = hex_a.lstrip("#")
+    b = hex_b.lstrip("#")
+    out = []
+    for i in (0, 2, 4):
+        ca = int(a[i:i + 2], 16)
+        cb = int(b[i:i + 2], 16)
+        out.append(round(ca + (cb - ca) * ratio))
+    return "#" + "".join(f"{v:02X}" for v in out)
+
+
 #: 强调色。两套主题共用同一个蓝，保证品牌一致
 ACCENT = "#4C7DFF"
 ACCENT_HOVER = "#6A93FF"
@@ -86,6 +103,15 @@ DARK = {
     "scroll_handle": "#243244",
     "scroll_handle_hover": "#33445B",
     "splitter": "#16212E",
+    # 并排三个面板各自的底色：不靠明度（暗色挤不出差异），靠色相偏向区分
+    # 原文=中性偏冷 / 改写后=偏蓝（它是 AI 产出）/ 预览=偏暖（它更像成品）
+    "panel_original": _mix("#0A0F16", "#7C93B0", 0.09),
+    "panel_rewritten": _mix("#0A0F16", "#4C7DFF", 0.12),
+    "panel_preview": _mix("#0A0F16", "#E8C07A", 0.07),
+    # 每个面板标题条下方的一条细线，颜色与面板偏向呼应
+    "panel_accent_original": "#243044",
+    "panel_accent_rewritten": ACCENT_DARK,
+    "panel_accent_preview": "#4A4030",
     # 质感：白色光泽（暗色主题靠提亮，但强度要克制，否则顶部栏会发白）
     "sheen": _sheen(_WHITE, 0.028, 0.0),
     "sheen_strong": _sheen(_WHITE, 0.055, 0.0),
@@ -127,6 +153,13 @@ LIGHT = {
     "scroll_handle": "#CFD8E3",
     "scroll_handle_hover": "#A9B6C6",
     "splitter": "#E2E8F0",
+    # 并排三个面板：亮色下明度差够用，再用一条彩色顶边强化
+    "panel_original": "#FFFFFF",
+    "panel_rewritten": "#F7FAFF",
+    "panel_preview": "#FFFCF6",
+    "panel_accent_original": "#D8E0EC",
+    "panel_accent_rewritten": ACCENT,
+    "panel_accent_preview": "#E8D9BC",
     # 质感：亮色主题靠把按钮/卡片压成浅灰，与白色面板拉开
     "sheen": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFFFFF, stop:1 #FBFCFE)",
     "sheen_strong": "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFFFFF, stop:1 #EDF2F8)",
@@ -322,11 +355,15 @@ _TEMPLATE = Template("""
         color: $text_muted;
         border-color: $border;
     }
-    /* 并排面板的标题条（原文 / 改写后 / 预览） */
+    /* 并排面板的标题条（原文 / 改写后 / 预览）：底边用面板自己的强调色，
+       这样即使底色差异很小，一眼也能看出是三个不同的区域 */
     QFrame#panelHeader {
-        background-color: $bg_panel;
+        background-color: $bg_base;
         border-bottom: 1px solid $border;
     }
+    QFrame#header_original { border-bottom: 2px solid $panel_accent_original; }
+    QFrame#header_rewritten { border-bottom: 2px solid $panel_accent_rewritten; }
+    QFrame#header_preview { border-bottom: 2px solid $panel_accent_preview; }
     QLabel#panelTitle {
         color: $text_secondary;
         font-size: 12px;
@@ -360,7 +397,15 @@ _TEMPLATE = Template("""
         font-size: 12px;
         spacing: 6px;
     }
-    QWidget#panel_original, QWidget#panel_rewritten, QWidget#panel_preview,
+    QWidget#panel_original {
+        background-color: $panel_original;
+    }
+    QWidget#panel_rewritten {
+        background-color: $panel_rewritten;
+    }
+    QWidget#panel_preview {
+        background-color: $panel_preview;
+    }
     QSplitter#compare {
         background-color: $bg_base;
     }
@@ -440,6 +485,17 @@ _TEMPLATE = Template("""
         color: $text_muted;
         font-size: 12px;
     }
+    QPlainTextEdit#refineInput {
+        background: $input_grad;
+        border: 1px solid $border;
+        border-radius: $radius_md;
+        color: $text_primary;
+        font-size: 12.5px;
+        padding: 8px 10px;
+    }
+    QPlainTextEdit#refineInput:focus {
+        border-color: $accent;
+    }
 
     /* 底部常驻操作栏 */
     QFrame#actionBar {
@@ -503,9 +559,10 @@ _TEMPLATE = Template("""
         border-radius: $radius_md;
         padding: 10px;
     }
-    /* 正文面板：画布底色 + 顶部一条极淡光泽，读起来像一张「纸」而不是色块 */
+    /* 正文区透明，露出所在面板自己的底色 —— 三个面板才能各有一张「纸」。
+       编辑器一旦自带不透明背景，会把面板的底色整块盖住。 */
     QTextEdit#editor, QTextBrowser#previewRender {
-        background: $input_grad;
+        background: transparent;
         border: none;
         border-radius: 0px;
         padding: 16px 18px;
