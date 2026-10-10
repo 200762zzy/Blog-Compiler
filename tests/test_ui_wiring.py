@@ -55,11 +55,46 @@ class TestToneCombo:
         assert main_window.settings.get("ai_tone_custom") == "简洁的工程笔记风"
         assert main_window.settings.get("ai_tone") == "自定义..."
 
-    def test_combo_resets_so_state_is_unambiguous(self, main_window, monkeypatch):
-        """处理完不能让下拉框停在「自定义...」，否则用户看不出到底选了哪个。"""
-        self._stub_dialog(monkeypatch)
+    def test_custom_text_is_used_in_the_prompt(self, main_window, monkeypatch):
+        """最关键的一条：填了自定义语气，AI 就必须真的收到它。
+
+        以前的实现靠「下拉框显示的文字」反推语气，而自定义文本会被复位掉，
+        于是自定义 persona 被静默忽略、AI 拿到的仍是内置语气。
+        """
+        self._stub_dialog(monkeypatch, text="像一位耐心的师兄在讲解")
         self._activate_custom(main_window)
-        assert main_window.tone_combo.currentText() != "自定义..."
+
+        prompt = main_window._build_system_prompt("alt", main_window._current_tone())
+        assert "像一位耐心的师兄在讲解" in prompt
+
+    def test_combo_shows_the_custom_text(self, main_window, monkeypatch):
+        """下拉框要显示自定义内容，用户才看得出选的是什么。"""
+        self._stub_dialog(monkeypatch, text="简洁的工程笔记风")
+        self._activate_custom(main_window)
+        assert main_window.tone_combo.currentText() == "简洁的工程笔记风"
+
+    def test_changing_custom_text_updates_the_prompt(self, main_window, monkeypatch):
+        self._stub_dialog(monkeypatch, text="第一版语气")
+        self._activate_custom(main_window)
+
+        self._stub_dialog(monkeypatch, text="第二版语气")
+        self._activate_custom(main_window)
+
+        prompt = main_window._build_system_prompt("alt", main_window._current_tone())
+        assert "第二版语气" in prompt
+        assert "第一版语气" not in prompt
+
+    def test_switching_back_to_a_preset_changes_the_prompt(self, main_window, monkeypatch):
+        self._stub_dialog(monkeypatch, text="自定义内容")
+        self._activate_custom(main_window)
+
+        idx = main_window.tone_combo.findText("教程风")
+        main_window.tone_combo.setCurrentIndex(idx)
+        main_window.tone_combo.activated.emit(idx)
+
+        assert main_window._current_tone() == "教程风"
+        prompt = main_window._build_system_prompt("alt", main_window._current_tone())
+        assert "技术教程作者" in prompt
 
     def test_cancel_falls_back_to_previous_tone(self, main_window, monkeypatch):
         self._stub_dialog(monkeypatch, text="", ok=False)
@@ -67,7 +102,7 @@ class TestToneCombo:
         self._activate_custom(main_window)
 
         assert main_window.settings.get("ai_tone") == previous
-        assert main_window.tone_combo.currentText() == previous
+        assert main_window._current_tone() == previous
 
     def test_choosing_a_preset_updates_the_setting(self, main_window, monkeypatch):
         self._stub_dialog(monkeypatch)
@@ -76,6 +111,7 @@ class TestToneCombo:
         main_window.tone_combo.activated.emit(idx)
 
         assert main_window.settings.get("ai_tone") == "教程风"
+        assert main_window._current_tone() == "教程风"
         assert main_window._tone_before_custom == "教程风"
 
 

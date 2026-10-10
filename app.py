@@ -1663,6 +1663,7 @@ class MainWindow(QMainWindow):
         if text != "自定义...":
             self._tone_before_custom = text
             self.settings.set("ai_tone", text)
+            self._set_tone_selection(text)
             return
 
         from PySide6.QtWidgets import QInputDialog
@@ -1676,15 +1677,48 @@ class MainWindow(QMainWindow):
             self._custom_tone_text = new_text.strip()
             self.settings.set("ai_tone_custom", self._custom_tone_text)
             self.settings.set("ai_tone", "自定义...")
+            self._set_tone_selection("自定义...")
             self.log(f"✍️ 已设置自定义语气（{len(self._custom_tone_text)} 字）")
         else:
             # 取消：回到上次选中的预设
             self.settings.set("ai_tone", self._tone_before_custom)
-
-        self._reset_tone_combo_to(self.settings.get("ai_tone", "技术博主风"))
+            self._set_tone_selection(self._tone_before_custom)
 
     #: 内置语气。读配置时要拿它校验，避免历史脏数据把界面搞崩。
     TONE_PRESETS = ("技术博主风", "学生笔记风", "教程风", "轻松口语化")
+
+    def _current_tone(self) -> str:
+        """真正生效的语气，与下拉框显示的内容无关。
+
+        自定义语气不适合直接显示在下拉框里（文案可能很长），
+        所以「选中的语气」单独记在 _selected_tone，不能靠 currentText() 反推——
+        之前就是靠它反推，导致自定义文本被静默忽略、AI 收到的其实是内置语气。
+        """
+        return getattr(self, "_selected_tone", "技术博主风")
+
+    def _set_tone_selection(self, tone: str):
+        """设置当前语气，并把它同步到下拉框的显示。"""
+        if not isinstance(tone, str) or tone not in self.TONE_PRESETS + ("自定义...",):
+            tone = "技术博主风"
+        self._selected_tone = tone
+
+        combo = self.tone_combo
+        combo.blockSignals(True)
+        if tone == "自定义...":
+            custom = (self._custom_tone_text or "").strip()
+            if custom:
+                # 把自定义文本作为条目加进去，这样用户能看见自己选的是什么
+                existing = combo.findText(custom)
+                if existing < 0:
+                    combo.addItem(custom)
+                    existing = combo.count() - 1
+                combo.setCurrentIndex(existing)
+            else:
+                combo.setCurrentIndex(combo.findText("技术博主风"))
+        else:
+            idx = combo.findText(tone)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
 
     def _sanitize_tone(self, value) -> str:
         """把配置里读出的语气值修成合法的字符串。
@@ -1704,18 +1738,8 @@ class MainWindow(QMainWindow):
         return "技术博主风"
 
     def _reset_tone_combo_to(self, tone: str):
-        """把下拉框复位到指定语气，期间不触发信号。"""
-        if not isinstance(tone, str):
-            tone = "技术博主风"
-        target = tone if tone != "自定义..." else self._tone_before_custom
-        idx = self.tone_combo.findText(str(target))
-        if idx < 0:
-            idx = self.tone_combo.findText("技术博主风")
-        if idx < 0:
-            idx = 0
-        self.tone_combo.blockSignals(True)
-        self.tone_combo.setCurrentIndex(idx)
-        self.tone_combo.blockSignals(False)
+        """兼容旧调用：把下拉框复位到指定语气。"""
+        self._set_tone_selection(tone)
 
     def _restore_ai_settings(self):
         api_key = self.settings.get_encrypted("ai_api_key")
@@ -1946,7 +1970,7 @@ class MainWindow(QMainWindow):
 
             self.settings.set("ai_temperature", self.settings_temperature.value())
             self.settings.set("ai_max_tokens", self.settings_max_tokens.value())
-            self.settings.set("ai_tone", self.tone_combo.currentText())
+            self.settings.set("ai_tone", self._current_tone())
             self.settings.set("ai_tone_custom", self._custom_tone_text)
             self.settings.set("ai_custom_prompt", self.settings_custom_prompt.toPlainText())
             self.settings.set("ai_use_custom_prompt", self.settings_use_custom.isChecked())
@@ -2093,7 +2117,7 @@ class MainWindow(QMainWindow):
         self._start_ai_rewrite(rewrite_content, mode)
 
     def _start_ai_rewrite(self, content, mode, refine: bool = False):
-        base_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
+        base_prompt = self._build_system_prompt(mode, self._current_tone())
         if refine:
             system_prompt = self._build_refine_prompt(
                 base_prompt, self.refine_input.toPlainText()
@@ -2190,7 +2214,7 @@ class MainWindow(QMainWindow):
         self._start_selection_rewrite(rewrite_content, mode, full_text, start, end)
 
     def _start_selection_rewrite(self, content, mode, full_text, start, end):
-        system_prompt = self._build_system_prompt(mode, self.tone_combo.currentText())
+        system_prompt = self._build_system_prompt(mode, self._current_tone())
         self.ai_rewriter.config.system_prompt = system_prompt
 
         self.log("🤖 开始改写选中区域...")
