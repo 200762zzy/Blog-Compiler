@@ -1,14 +1,17 @@
 import re
 from dataclasses import dataclass, field
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 import mistune
-from image_handler import ImageHandler
+from image_handler import ImageHandler, resolve_map
 
 
 @dataclass
 class ParseResult:
     images: List[str] = field(default_factory=list)
+    #: {正文里的原始引用: 磁盘上的绝对路径}，用于上传/发布时定位文件
+    resolved_images: dict = field(default_factory=dict)
     code_block_count: int = 0
     paragraph_count: int = 0
     table_count: int = 0
@@ -18,7 +21,12 @@ class ParseResult:
     error: str = ""
 
 
-def parse_markdown(content: str) -> ParseResult:
+def parse_markdown(content: str, base_dir: Optional[Path | str] = None) -> ParseResult:
+    """解析 Markdown。
+
+    base_dir 是笔记所在目录，用来解析相对路径图片（Typora 默认就写 `./img/a.png`）。
+    不传则只认绝对路径和 URL。
+    """
     result = ParseResult(raw_markdown=content)
 
     if not content.strip():
@@ -34,6 +42,7 @@ def parse_markdown(content: str) -> ParseResult:
         return result
 
     result.images = ImageHandler.extract_images(content)
+    result.resolved_images = resolve_map(content, base_dir)
 
     code_fences = re.findall(r'```', content)
     result.code_block_count = len(code_fences) // 2

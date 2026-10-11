@@ -54,6 +54,7 @@ from ai_rewriter import (
     AIRewriter, RewriteConfig, DEFAULT_API_BASE, DEFAULT_MODEL, resolve_model_name,
 )
 from exporter import Exporter
+from image_handler import apply_resolved_paths, resolve_map
 from image_uploader import upload_images
 from icons import get as get_icon, set_color as set_icon_color
 from theme import build_stylesheet, get_tokens
@@ -475,6 +476,10 @@ STEP_TITLES = [
     ("发布", "选平台填标签"),
 ]
 
+#: 每个文件保留多少版草稿，以及最多记住多少个文件的历史
+DRAFT_KEEP = 20
+DRAFT_FILES_KEEP = 20
+
 
 class Stepper(QFrame):
     """顶部四步导航：点某一步就切换左侧的任务面板。"""
@@ -570,6 +575,8 @@ class MainWindow(QMainWindow):
         self.current_content = ""
         self.rewritten_content = ""
         self.current_result = None
+        self.current_file = ""
+        self.current_base_dir = None
         self.drafts = []
         self._rewrite_gen = 0
         self._custom_tone_text = ""
@@ -1121,6 +1128,23 @@ class MainWindow(QMainWindow):
         for i in (0, 1, 2, 3):
             self.stepper.set_done(i, self._step_finished(i))
 
+    def _resolved_images(self, result=None) -> dict:
+        """{正文里的原始引用: 绝对路径}，只包含确实存在的文件。"""
+        result = result or self.current_result
+        if result is None:
+            return {}
+        mapping = getattr(result, "resolved_images", None)
+        if mapping is None:
+            mapping = resolve_map(result.raw_markdown, self.current_base_dir)
+        return mapping
+
+    def _prepare_images_for_upload(self, content: str) -> str:
+        """把正文里的相对路径换成绝对路径，交给上传/发布流程。
+
+        导出的文档仍保留用户原本写的相对路径 —— 这里只在上传前临时替换。
+        """
+        return apply_resolved_paths(content, self._resolved_images())
+
     def _update_precheck(self):
         """发布前把能本地判断的问题先摆出来，省得发出去才发现。"""
         lines = []
@@ -1139,7 +1163,7 @@ class MainWindow(QMainWindow):
             lines.append(f"✓ 标题 {len(title)} 字，长度合适")
 
         if self.current_result and self.current_result.images:
-            exists = sum(1 for p in self.current_result.images if Path(p).exists())
+            exists = len(self._resolved_images())
             total = len(self.current_result.images)
             if exists == total:
                 lines.append(f"✓ {total} 张图片路径均存在")
@@ -1285,6 +1309,10 @@ class MainWindow(QMainWindow):
         self.current_content = ""
         self.current_result = None
         self.rewritten_content = ""
+        self.current_file = ""
+        self.current_base_dir = None
+        self.drafts = []
+        self._update_draft_combo()
         self._update_panel_counters()
         self._update_task_panels(None)
         self._update_step_states()
@@ -1313,10 +1341,15 @@ class MainWindow(QMainWindow):
             return
 
         self.current_content = content
+        self.current_file = str(filepath)
+        self.current_base_dir = Path(filepath).parent
         self.original_view.setText(content)
         self.breadcrumb.setText(f"文件 / {Path(filepath).name}")
-        result = parse_markdown(content)
+        # 传笔记所在目录：相对路径图片（./img/a.png）要靠它才能定位
+        result = parse_markdown(content, base_dir=self.current_base_dir)
         self.current_result = result
+        # 切文件时载入这个文件自己的草稿历史（存在配置里，重启后还在）
+        self._load_drafts()
 
         if not result.is_valid:
             self.log(f"⚠️ 解析警告: {result.error}")
@@ -1492,7 +1525,7 @@ class MainWindow(QMainWindow):
             self.image_summary.setText("这篇文章没有图片")
             return
 
-        local = [p for p in result.images if Path(p).exists()]
+        local = self._resolved_images(result)
         missing = len(result.images) - len(local)
         summary = f"共 {len(result.images)} 张图片，其中本地文件 {len(local)} 张"
         if missing:
@@ -2075,7 +2108,7 @@ class MainWindow(QMainWindow):
             self.btn_ai.setText("取消上传")
             self.btn_ai.setEnabled(True)
             QApplication.processEvents()
-            local_images = [p for p in self.current_result.images if Path(p).exists()]
+            local_images = [str(p) for p in self._resolved_images().values()]
             if local_images:
                 self.image_status_list.clear()
                 self.image_status_list.setVisible(True)
@@ -2168,8 +2201,9 @@ class MainWindow(QMainWindow):
         rewrite_content = selected
 
         if mode == "upload" and self.current_result:
-            local_images = [p for p in self.current_result.images if Path(p).exists()]
-            local_in_sel = [p for p in local_images if p in selected]
+            # 只上传「选中区域里出现过的」图片；相对路径要按原始引用去比对
+            mapping = self._resolved_images()
+            local_in_sel = [str(p) for ref, p in mapping.items() if ref in selected]
             if local_in_sel:
                 self.image_status_list.clear()
                 self.image_status_list.setVisible(True)
@@ -2335,14 +2369,57 @@ class MainWindow(QMainWindow):
         self.status_label.setText("就绪")
         self.btn_ai.setText("AI 改写")
 
+    # ---- 草稿（落盘） ---------------------------------------------------
+    @property
+    def _draft_key(self) -> str:
+        """草稿按文件归档；没打开文件时用一个占位键。"""
+        return self.current_file or "__unnamed__"
+
+    def _persist_drafts(self):
+        store = self.settings.get("drafts", {})
+        if not isinstance(store, dict):
+            store = {}
+        store[self._draft_key] = {
+            "base": str(self.current_base_dir or ""),
+            "items": self.drafts[-DRAFT_KEEP:],
+        }
+        # 只保留最近几个文件的历史，避免配置无限膨胀
+        if len(store) > DRAFT_FILES_KEEP:
+            for stale in list(store)[:-DRAFT_FILES_KEEP]:
+                store.pop(stale, None)
+        self.settings.set("drafts", store)
+
+    def _load_drafts(self):
+        """换文件时切换草稿历史（此前只在内存里，关掉程序就没了）。"""
+        store = self.settings.get("drafts", {})
+        if not isinstance(store, dict):
+            self.drafts = []
+        else:
+            entry = store.get(self._draft_key) or {}
+            items = entry.get("items") if isinstance(entry, dict) else None
+            self.drafts = list(items) if isinstance(items, list) else []
+        self._update_draft_combo()
+
+    def _clear_drafts(self):
+        store = self.settings.get("drafts", {})
+        if isinstance(store, dict):
+            store.pop(self._draft_key, None)
+            self.settings.set("drafts", store)
+        self.drafts = []
+        self._update_draft_combo()
+
     def _save_draft(self, content=None):
         from datetime import datetime
         content = content or self.rewritten_content or self.current_content
         if not content:
             return
-        ts = datetime.now().strftime("%H:%M")
+        if self.drafts and self.drafts[-1].get("content") == content:
+            return  # 内容没变就不重复存
+        ts = datetime.now().strftime("%m-%d %H:%M")
         v = len(self.drafts) + 1
         self.drafts.append({"v": v, "content": content, "ts": ts})
+        self.drafts = self.drafts[-DRAFT_KEEP:]
+        self._persist_drafts()
         self._update_draft_combo()
         self.draft_combo.setCurrentIndex(len(self.drafts) - 1)
         self.log(f"📝 草稿 v{v}已保存 ({ts})")
@@ -2372,6 +2449,38 @@ class MainWindow(QMainWindow):
         self.btn_multi_publish.setEnabled(True)
         self.log(f"📂 已恢复草稿 v{draft['v']} ({draft['ts']})")
 
+    # ---- 导出时的平台方言 -------------------------------------------------
+    def _remembered_platforms(self) -> list[str]:
+        """上次发布时勾选的平台，用于决定导出/复制该按哪种方言处理。
+
+        配置可能是脏数据（手改、旧版本写入），这里只认已知平台名，
+        其余一律忽略——导出路径不该因为配置坏了就出错。
+        """
+        known = {p.name for p in get_publishers()}
+        raw = self.settings.get("last_publish_platforms", [])
+        if not isinstance(raw, list):
+            return []
+        return [name for name in raw if isinstance(name, str) and name in known]
+
+    def _remember_platforms(self, names):
+        self.settings.set("last_publish_platforms", list(names))
+
+    def _export_adapter_label(self) -> tuple[str, str]:
+        """返回 (平台名, 说明文字)。没记住平台时按原样导出，不做任何改动。"""
+        platforms = self._remembered_platforms()
+        if len(platforms) == 1:
+            return platforms[0], platforms[0]
+        if len(platforms) > 1:
+            # 勾了多个平台时没有唯一方言，导出保持原文最不容易出错
+            return "", "多个平台（保持原文，不做方言转换）"
+        return "", "未指定平台（保持原文）"
+
+    def _prepare_for_export(self, content: str) -> tuple[str, str]:
+        platform, label = self._export_adapter_label()
+        if not platform:
+            return content, label
+        return Exporter.adapt_for(platform, content), label
+
     def _export_file(self):
         content = self.rewritten_content or self.current_content
         if not content:
@@ -2392,7 +2501,8 @@ class MainWindow(QMainWindow):
         if not filepath:
             return
 
-        content = Exporter.adapt_csdn_format(content)
+        content, label = self._prepare_for_export(content)
+
         def ask_overwrite(path):
             reply = QMessageBox.question(
                 self, "文件已存在",
@@ -2403,8 +2513,8 @@ class MainWindow(QMainWindow):
         result = Exporter.to_file(content, filepath, overwrite_callback=ask_overwrite)
         if result is None:
             return
-        self.log(f"📝 已导出到: {filepath}")
-        QMessageBox.information(self, "导出成功", f"文件已保存到:\n{filepath}")
+        self.log(f"📝 已导出到: {filepath}（{label}）")
+        QMessageBox.information(self, "导出成功", f"文件已保存到:\n{filepath}\n\n格式：{label}")
 
     def _export_clipboard(self):
         content = self.rewritten_content or self.current_content
@@ -2412,10 +2522,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "没有可导出的内容")
             return
 
-        content = Exporter.adapt_csdn_format(content)
+        content, label = self._prepare_for_export(content)
         Exporter.to_clipboard(content)
-        self.log("📋 已复制到剪贴板")
-        QMessageBox.information(self, "复制成功", "内容已复制到剪贴板，可直接粘贴到 CSDN 编辑器")
+        self.log(f"📋 已复制到剪贴板（{label}）")
+        QMessageBox.information(self, "复制成功", f"内容已复制到剪贴板\n\n格式：{label}")
 
     def _get_image_mode(self) -> str:
         checked = self.img_mode_group.checkedId()
@@ -2534,6 +2644,9 @@ class MainWindow(QMainWindow):
         if not content:
             QMessageBox.information(self, "提示", "没有可发布的内容")
             return
+
+        # 发布流程需要能读到图片文件，所以这里把相对路径换成绝对路径
+        content = self._prepare_images_for_upload(content)
 
         filepath = (
             self.file_paths[self.file_list.currentRow()]
@@ -2787,14 +2900,19 @@ class PublishDialog(QDialog):
             "draft": self.draft_check.isChecked(),
         }
 
+    def _selected_platform_names(self) -> list[str]:
+        return [n for n, cb in self._platform_checks.items() if cb.isChecked()]
+
     def _do_publish(self):
         args = self._collect_args()
         if not args:
             return
-        names = [n for n, cb in self._platform_checks.items() if cb.isChecked()]
+        names = self._selected_platform_names()
         if not names:
             QMessageBox.warning(self, "提示", "请至少选择一个已登录的平台")
             return
+        # 记住勾选的平台：之后点「导出/复制」就按这些平台的方言处理
+        self.parent._remember_platforms(names)
         self._pub_args = args
         self._save_presets(names)
         self._reset_results(names)
