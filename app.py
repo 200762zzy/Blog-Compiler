@@ -1184,6 +1184,7 @@ class MainWindow(QMainWindow):
             ("添加文件", self._add_files),
             ("清空文件列表", self._clear_files),
             ("AI 改写", self._ai_rewrite),
+            ("批量处理所有文件", self._open_batch_dialog),
             ("导出文件", self._export_file),
             ("复制到剪贴板", self._export_clipboard),
             ("多平台发布", self._open_publish_dialog),
@@ -1194,6 +1195,17 @@ class MainWindow(QMainWindow):
         ]
         dlg = CommandPalette(self, commands)
         dlg.exec()
+
+    def _open_batch_dialog(self):
+        if not self.file_paths:
+            QMessageBox.information(self, "提示", "请先添加要处理的 .md 文件")
+            return
+        if self.ai_rewriter is None or not self.ai_rewriter.config.api_key:
+            QMessageBox.warning(self, "提示", "请先在设置中配置 API Key")
+            self._show_settings()
+            return
+        BatchDialog(self, self.file_paths).exec()
+
     def _show_account_manager(self, platform=None):
         AccountManagerDialog(self, platform).exec()
     def _show_publish_history(self):
@@ -2669,6 +2681,206 @@ class MainWindow(QMainWindow):
         return embed_images(markdown)
 
 
+class BatchWorker(QThread):
+    """逐篇处理文件列表，每完成一篇就回报一次结果。"""
+
+    progress = Signal(int, int)          # 已完成数, 总数
+    file_done = Signal(str, bool, str)   # 源文件, 是否成功, 说明
+    all_done = Signal(int, int)          # 成功数, 失败数
+
+    def __init__(self, rewriter, files, system_prompt, image_mode="alt"):
+        super().__init__()
+        self.rewriter = rewriter
+        self.files = list(files)
+        self.system_prompt = system_prompt
+        self.image_mode = image_mode
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        self.rewriter.cancel()
+        self.requestInterruption()
+
+    def _prepare(self, path: Path) -> str:
+        """读文件并按图片处理方式准备正文。
+
+        每篇笔记有自己的目录，相对路径图片必须按各自目录解析 ——
+        批量场景下不能共用一个基准目录。
+        """
+        content = path.read_text(encoding="utf-8")
+        mapping = resolve_map(content, path.parent)
+        content = apply_resolved_paths(content, mapping)
+        if self.image_mode == "base64":
+            from image_base64 import embed_images
+            content = embed_images(content)
+        return content
+
+    def run(self):
+        ok = fail = 0
+        total = len(self.files)
+        for index, raw_path in enumerate(self.files, start=1):
+            if self._cancelled or self.isInterruptionRequested():
+                break
+
+            path = Path(raw_path)
+            try:
+                content = self._prepare(path)
+                self.rewriter.config.system_prompt = self.system_prompt
+                result = self.rewriter.rewrite(content)
+                if not result or not result.strip():
+                    raise ValueError("模型返回了空内容")
+
+                out_path = path.with_name(f"{path.stem}.rewritten.md")
+                out_path.write_text(result, encoding="utf-8")
+                ok += 1
+                self.file_done.emit(raw_path, True, str(out_path))
+            except Exception as exc:  # noqa: BLE001 - 单篇失败不该中断整批
+                fail += 1
+                self.file_done.emit(raw_path, False, f"{type(exc).__name__}: {exc}")
+
+            self.progress.emit(index, total)
+
+        self.all_done.emit(ok, fail)
+
+
+class BatchDialog(QDialog):
+    """批量改写：一次处理文件列表里的所有笔记。"""
+
+    def __init__(self, parent, files):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.files = list(files)
+        self.worker = None
+
+        self.setWindowTitle("批量处理")
+        self.setMinimumSize(660, 520)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(10)
+
+        head = QLabel(f"共 {len(self.files)} 篇笔记")
+        head.setObjectName("taskTitle")
+        lay.addWidget(head)
+
+        hint = QLabel(
+            "每篇会按自己的目录解析图片，结果另存为「原名.rewritten.md」，"
+            "不会覆盖原文件。"
+        )
+        hint.setObjectName("taskDesc")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self.file_list = QListWidget()
+        self.file_list.setObjectName("batchList")
+        for raw in self.files:
+            item = QListWidgetItem(f"{Path(raw).name}   ·   待处理")
+            item.setData(Qt.UserRole, raw)
+            self.file_list.addItem(item)
+        lay.addWidget(self.file_list, 1)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self.tone_combo = QComboBox()
+        self.tone_combo.addItems(list(parent.TONE_PRESETS))
+        custom = (getattr(parent, "_custom_tone_text", "") or "").strip()
+        if custom:
+            self.tone_combo.addItem("自定义（沿用当前设置）")
+        saved = parent.settings.get("batch_tone", "")
+        idx = self.tone_combo.findText(saved)
+        if idx >= 0:
+            self.tone_combo.setCurrentIndex(idx)
+        form.addRow("语气", self.tone_combo)
+
+        self.image_combo = QComboBox()
+        self.image_combo.addItems(["只生成 alt 描述（默认）", "图片内嵌为 base64", "保持原样"])
+        saved_img = parent.settings.get("batch_image_mode", 0)
+        if isinstance(saved_img, int) and 0 <= saved_img < self.image_combo.count():
+            self.image_combo.setCurrentIndex(saved_img)
+        form.addRow("图片", self.image_combo)
+
+        lay.addLayout(form)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("progressBar")
+        self.progress.setRange(0, len(self.files))
+        self.progress.setValue(0)
+        lay.addWidget(self.progress)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("logView")
+        self.log_view.setReadOnly(True)
+        self.log_view.setFixedHeight(110)
+        lay.addWidget(self.log_view)
+
+        buttons = QDialogButtonBox()
+        self.btn_start = buttons.addButton("开始处理", QDialogButtonBox.AcceptRole)
+        self.btn_close = buttons.addButton("关闭", QDialogButtonBox.RejectRole)
+        self.btn_start.clicked.connect(self._start)
+        self.btn_close.clicked.connect(self._close)
+        lay.addWidget(buttons)
+
+    # ---- 交互 ----------------------------------------------------------
+    def _log(self, text: str):
+        self.log_view.appendPlainText(text)
+
+    def _start(self):
+        parent = self.parent_window
+        if parent.ai_rewriter is None or not parent.ai_rewriter.config.api_key:
+            QMessageBox.warning(self, "提示", "请先在设置中配置 API Key")
+            return
+
+        tone = self.tone_combo.currentText()
+        if tone.startswith("自定义"):
+            tone = parent._current_tone()
+        parent.settings.set("batch_tone", self.tone_combo.currentText())
+        parent.settings.set("batch_image_mode", self.image_combo.currentIndex())
+
+        image_mode = {0: "alt", 1: "base64", 2: "keep"}[self.image_combo.currentIndex()]
+        system_prompt = parent._build_system_prompt(image_mode, tone)
+
+        self.btn_start.setEnabled(False)
+        self.progress.setValue(0)
+        self._log(f"开始处理 {len(self.files)} 篇，语气：{tone}")
+
+        self.worker = BatchWorker(parent.ai_rewriter, self.files, system_prompt, image_mode)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.file_done.connect(self._on_file_done)
+        self.worker.all_done.connect(self._on_all_done)
+        self.worker.start()
+
+    def _on_progress(self, done: int, total: int):
+        self.progress.setValue(done)
+
+    def _on_file_done(self, raw_path: str, success: bool, detail: str):
+        name = Path(raw_path).name
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item and item.data(Qt.UserRole) == raw_path:
+                item.setText(f"{name}   ·   {'✓ 完成' if success else '✗ 失败'}")
+                if success:
+                    item.setToolTip(f"已保存到 {detail}")
+                break
+        if success:
+            self._log(f"✓ {name} → {Path(detail).name}")
+        else:
+            self._log(f"✗ {name} — {detail}")
+
+    def _on_all_done(self, ok: int, fail: int):
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("再跑一次")
+        self._log(f"全部结束：成功 {ok} 篇，失败 {fail} 篇")
+        if hasattr(self.parent_window, "log"):
+            self.parent_window.log(f"📦 批量处理完成：成功 {ok} 篇，失败 {fail} 篇")
+
+    def _close(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            self.worker.wait(5000)
+        self.reject()
+
+
 class MetaWorker(QThread):
     done = Signal(dict)
     error = Signal(str)
@@ -2677,7 +2889,6 @@ class MetaWorker(QThread):
         super().__init__()
         self.rewriter = rewriter
         self.content = content
-
     def run(self):
         try:
             self.done.emit(self.rewriter.generate_meta(self.content))

@@ -397,6 +397,23 @@ _TEMPLATE = Template("""
         font-size: 12px;
         spacing: 6px;
     }
+    QListWidget#batchList {
+        background: $input_grad;
+        border: 1px solid $border;
+        border-radius: $radius_md;
+        color: $text_primary;
+        font-size: 12.5px;
+        padding: 4px;
+    }
+    QListWidget#batchList::item {
+        padding: 5px 8px;
+        border-radius: 6px;
+        border: 1px solid transparent;
+    }
+    QListWidget#batchList::item:hover {
+        background-color: $bg_hover;
+        border-color: $border_strong;
+    }
     QWidget#panel_original {
         background-color: $panel_original;
     }

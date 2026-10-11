@@ -17,3 +17,4 @@ config.enc
 .build-log.txt
 .mockups/
 .msg.txt
+.commitmsg
