@@ -4,6 +4,8 @@
 低于标准的组合直接判失败。这样以后调整配色时不会悄悄把文字改糊。
 """
 
+import re
+
 import pytest
 
 import theme as theme_module
@@ -145,6 +147,80 @@ class TestStylesheet:
     def test_unknown_theme_falls_back_without_crashing(self):
         assert theme_module.build_stylesheet("nope") == theme_module.build_stylesheet("dark")
 
-    def test_get_tokens_matches_the_dicts(self):
-        assert theme_module.get_tokens("light") == theme_module.LIGHT
-        assert theme_module.get_tokens("dark") == theme_module.DARK
+    def test_get_tokens_contains_the_colour_palette(self):
+        """色板必须原样带出来，字体栈是额外附加的键。"""
+        for theme, palette in (("light", theme_module.LIGHT), ("dark", theme_module.DARK)):
+            tokens = theme_module.get_tokens(theme)
+            for key, value in palette.items():
+                assert tokens[key] == value, f"{theme} 的 {key} 与色板不一致"
+
+    def test_get_tokens_adds_font_stacks(self):
+        tokens = theme_module.get_tokens("dark")
+        assert "font_ui" in tokens and "font_mono" in tokens
+
+
+class TestFonts:
+    """中文字体必须显式指定，否则会回退到宋体。"""
+
+    def test_ui_stack_puts_a_cjk_font_first(self):
+        stack = theme_module.font_stacks()["font_ui"]
+        first = stack.split(",")[0].strip().strip('"')
+        assert first in theme_module.UI_FONT_CHOICES
+        assert any(
+            name in stack
+            for name in ("Microsoft YaHei UI", "Microsoft YaHei", "DengXian",
+                         "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC")
+        ), "字体栈里必须有一个中文字体，否则中文会掉回宋体"
+
+    def test_ui_stack_does_not_lead_with_a_latin_only_font(self):
+        """Inter / Segoe UI 没有中文字形，放在最前面等于没指定。"""
+        stack = theme_module.font_stacks()["font_ui"]
+        first = stack.split(",")[0].strip().strip('"')
+        assert first not in ("Inter", "Segoe UI")
+
+    def test_user_choice_leads_the_stack(self):
+        stacks = theme_module.font_stacks("DengXian", "JetBrains Mono")
+        assert stacks["font_ui"].startswith('"DengXian"')
+        assert stacks["font_mono"].startswith('"JetBrains Mono"')
+
+    def test_mono_stack_includes_a_cjk_fallback(self):
+        """代码区里的中文注释也要好看，所以等宽字体后面接中文字体。"""
+        stack = theme_module.font_stacks("Consolas", "Consolas")["font_mono"]
+        assert "Microsoft YaHei" in stack
+
+    def test_chosen_font_still_has_fallbacks(self):
+        stack = theme_module.font_stacks("NotARealFont", "")["font_ui"]
+        assert stack.startswith('"NotARealFont"')
+        assert "Microsoft YaHei UI" in stack
+
+    def test_empty_choice_is_tolerated(self):
+        stacks = theme_module.font_stacks("", "")
+        assert stacks["font_ui"] and stacks["font_mono"]
+        assert "sans-serif" in stacks["font_ui"]
+
+    def test_stylesheet_has_no_unreplaced_font_placeholder(self):
+        qss = theme_module.build_stylesheet("dark", "DengXian", "Consolas")
+        assert "$font_ui" not in qss and "$font_mono" not in qss
+        assert "DengXian" in qss
+
+    @pytest.mark.parametrize("theme", ["dark", "light"])
+    def test_editors_use_the_mono_font(self, theme):
+        qss = theme_module.build_stylesheet(theme)
+        editor_rules = [
+            body for sel, body in re.findall(r"([^{}]*)\{([^}]*)\}", qss)
+            if "QTextEdit#editor" in sel
+        ]
+        assert editor_rules, "编辑区没有样式"
+        assert any("font-family" in body for body in editor_rules), \
+            "编辑区字体必须由 QSS 指定（不要在 Python 里 setFont 覆盖）"
+
+    def test_chinese_input_box_uses_the_ui_font(self):
+        """自定义语气框是打中文的地方，用等宽字体不好看。"""
+        qss = theme_module.build_stylesheet("dark")
+        rules = [
+            body for sel, body in re.findall(r"([^{}]*)\{([^}]*)\}", qss)
+            if "QPlainTextEdit#refineInput" in sel
+        ]
+        assert any("font-family" in body for body in rules)
+        assert any("YaHei" in body or "DengXian" in body for body in rules)
+

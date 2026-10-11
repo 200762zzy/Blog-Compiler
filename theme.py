@@ -172,7 +172,17 @@ LIGHT = {
 
 _TEMPLATE = Template("""
     * {
-        font-family: "Inter", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+        font-family: $font_ui;
+    }
+    /* 正文编辑区、日志、预览用等宽字体。
+       注意：编辑器的字体由 QSS 决定，不要在 Python 里再 setFont() 覆盖，
+       否则中文注释会掉回宋体。 */
+    QTextEdit#editor, QTextBrowser#previewRender, QPlainTextEdit#logView {
+        font-family: $font_mono;
+    }
+    /* 自定义语气框是输入中文的地方，用界面字体更顺眼 */
+    QPlainTextEdit#refineInput {
+        font-family: $font_ui;
     }
     /* 层次：画布(bg_base) < 面板(bg_panel) < 卡片(bg_card) < 悬停(bg_hover)。
        越是「浮在上面」的表面越亮，这样不依赖 box-shadow（QSS 不支持）也能分层。 */
@@ -413,6 +423,14 @@ _TEMPLATE = Template("""
     QListWidget#batchList::item:hover {
         background-color: $bg_hover;
         border-color: $border_strong;
+    }
+    /* 字体设置的预览块：底纹比对话框稍深，便于比较字形 */
+    QLabel#fontPreview {
+        background: $input_grad;
+        border: 1px solid $border;
+        border-radius: $radius_md;
+        color: $text_primary;
+        padding: 12px 14px;
     }
     QWidget#panel_original {
         background-color: $panel_original;
@@ -853,9 +871,63 @@ _TEMPLATE = Template("""
 """)
 
 
-def get_tokens(theme: str = "dark") -> dict:
-    return LIGHT if theme == "light" else DARK
+#: 界面字体候选。顺序即优先级，第一个没装就往后找。
+#: 「Inter」「Segoe UI」都没有中文字形，只写它们会让中文回退到宋体 ——
+#: 那才是界面看起来「旧」的主因，所以中文字体必须排在前面。
+UI_FONT_CHOICES = (
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "DengXian",
+    "Microsoft JhengHei UI",
+    "PingFang SC",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "Segoe UI",
+)
+
+#: 等宽字体候选，用于正文编辑区与日志。
+#: Cascadia Code 是 Win11 自带的现代等宽字体；Consolas 更经典但中文要回退。
+MONO_FONT_CHOICES = (
+    "Cascadia Code",
+    "Cascadia Mono",
+    "JetBrains Mono",
+    "Consolas",
+    "DejaVu Sans Mono",
+)
+
+DEFAULT_UI_FONT = "Microsoft YaHei UI"
+DEFAULT_MONO_FONT = "Cascadia Code"
 
 
-def build_stylesheet(theme: str = "dark") -> str:
-    return _TEMPLATE.substitute(get_tokens(theme))
+def _css_stack(names) -> str:
+    """把字体名列表拼成 CSS font-family，带引号并补上兜底。"""
+    quoted = ", ".join(f'"{n}"' for n in names if n)
+    return f"{quoted}, sans-serif" if quoted else "sans-serif"
+
+
+def font_stacks(ui_font: str = "", mono_font: str = "") -> dict:
+    """返回主题模板需要的字体栈字符串。
+
+    用户选的字体放最前，其余候选按优先级跟在后面兜底 ——
+    这样即使选的字体缺字形，也能落到下一个可用字体，而不是掉进宋体。
+    """
+    ui_names = [ui_font] if ui_font else []
+    ui_names += [n for n in UI_FONT_CHOICES if n != ui_font]
+    # 等宽字体后面再接中文字体：代码区里的中文注释也要好看
+    mono_names = [mono_font] if mono_font else []
+    mono_names += [n for n in MONO_FONT_CHOICES if n != mono_font]
+    mono_names += ["Microsoft YaHei UI", "Microsoft YaHei"]
+    return {
+        "font_ui": _css_stack(ui_names),
+        "font_mono": _css_stack(mono_names),
+    }
+
+
+def get_tokens(theme: str = "dark", ui_font: str = "", mono_font: str = "") -> dict:
+    tokens = dict(LIGHT if theme == "light" else DARK)
+    tokens.update(font_stacks(ui_font, mono_font))
+    return tokens
+
+
+def build_stylesheet(theme: str = "dark", ui_font: str = "", mono_font: str = "") -> str:
+    return _TEMPLATE.substitute(get_tokens(theme, ui_font, mono_font))

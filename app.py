@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QByteArray, QTimer
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QDesktopServices, QPixmap, QPainter, QIcon, QShortcut, QKeySequence
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QDesktopServices, QPixmap, QPainter, QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -57,7 +57,10 @@ from exporter import Exporter
 from image_handler import apply_resolved_paths, resolve_map
 from image_uploader import upload_images
 from icons import get as get_icon, set_color as set_icon_color
-from theme import build_stylesheet, get_tokens
+from theme import (
+    build_stylesheet, get_tokens, DEFAULT_MONO_FONT, DEFAULT_UI_FONT,
+    MONO_FONT_CHOICES, UI_FONT_CHOICES,
+)
 from version import VERSION
 from publishers import init_publishers, get_publishers, get_publisher
 from publishers.base import PublishResult
@@ -725,7 +728,7 @@ class MainWindow(QMainWindow):
             view = QTextEdit()
             view.setObjectName("editor")
             view.setReadOnly(read_only)
-            view.setFont(QFont("Consolas", 10))
+            # 字体交给 theme.py 的 font_mono 决定（含中文字体兜底）
             lay.addWidget(view, 1)
             return panel, view, counter, expand_btn
 
@@ -1099,7 +1102,7 @@ class MainWindow(QMainWindow):
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
-        self.log_view.setFont(QFont("Consolas", 9))
+        # 字体交给 theme.py 的 font_mono（含中文字体兜底）
         self.log_view.setFixedHeight(64)
         self.log_view.setPlaceholderText("运行日志将显示在这里")
         lay.addWidget(self.log_view)
@@ -1191,10 +1194,14 @@ class MainWindow(QMainWindow):
             ("发布历史", self._show_publish_history),
             ("账号管理", self._show_account_manager),
             ("切换暗色/亮色模式", lambda: self.action_dark.toggle()),
+            ("字体设置", self._show_font_dialog),
             ("设置", self._show_settings),
         ]
         dlg = CommandPalette(self, commands)
         dlg.exec()
+
+    def _show_font_dialog(self):
+        FontDialog(self, self._ui_font(), self._mono_font()).exec()
 
     def _open_batch_dialog(self):
         if not self.file_paths:
@@ -1419,15 +1426,28 @@ class MainWindow(QMainWindow):
         self.settings.set("dark_mode", checked)
         self.log("已切换暗色模式" if checked else "已切换亮色模式")
 
+    def _font_setting(self, key: str, default: str) -> str:
+        """读字体设置，脏数据一律退回默认（同 ai_tone 的教训：配置里的值不能直接信）。"""
+        value = self.settings.get(key, default)
+        return value if isinstance(value, str) and value.strip() else default
+
+    def _ui_font(self) -> str:
+        return self._font_setting("ui_font", DEFAULT_UI_FONT)
+
+    def _mono_font(self) -> str:
+        return self._font_setting("mono_font", DEFAULT_MONO_FONT)
+
     def _apply_theme(self, theme: str):
         self._theme = theme
-        tokens = get_tokens(theme)
+        tokens = get_tokens(theme, self._ui_font(), self._mono_font())
         set_icon_color(tokens["text_secondary"])
-        self.setStyleSheet(build_stylesheet(theme))
+        self.setStyleSheet(
+            build_stylesheet(theme, self._ui_font(), self._mono_font())
+        )
         self._refresh_icons()
 
     def _refresh_icons(self):
-        tokens = get_tokens(getattr(self, "_theme", "dark"))
+        tokens = get_tokens(getattr(self, "_theme", "dark"), self._ui_font(), self._mono_font())
         primary = "#FFFFFF"
         secondary = tokens["text_secondary"]
         mapping = {
@@ -2879,6 +2899,98 @@ class BatchDialog(QDialog):
             self.worker.cancel()
             self.worker.wait(5000)
         self.reject()
+
+
+class FontDialog(QDialog):
+    """选择界面字体与代码字体。
+
+    界面字体决定了中文长什么样 —— 以前没显式指定中文字体，
+    中文会回退到宋体（点阵感、有明显衬线），是界面「显旧」的主因。
+    """
+
+    def __init__(self, parent, ui_font: str, mono_font: str):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle("字体设置")
+        self.setMinimumWidth(520)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(10)
+
+        tip = QLabel(
+            "界面字体影响所有中文文字；代码字体只影响正文编辑区、日志和自定义语气框。"
+        )
+        tip.setObjectName("taskDesc")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        form = QFormLayout()
+        form.setSpacing(9)
+
+        self.ui_combo = QComboBox()
+        self.ui_combo.setEditable(True)
+        self.ui_combo.addItems(self._font_names(UI_FONT_CHOICES))
+        self.ui_combo.setCurrentText(ui_font)
+        form.addRow("界面字体", self.ui_combo)
+
+        self.mono_combo = QComboBox()
+        self.mono_combo.setEditable(True)
+        self.mono_combo.addItems(self._font_names(MONO_FONT_CHOICES))
+        self.mono_combo.setCurrentText(mono_font)
+        form.addRow("代码字体", self.mono_combo)
+
+        lay.addLayout(form)
+
+        self.preview = QLabel("AI 改写 · 图片处理 · 已导出 3 篇\n"
+                              "def build(notes): return [rewrite(n) for n in notes]")
+        self.preview.setObjectName("fontPreview")
+        self.preview.setWordWrap(True)
+        self.preview.setMinimumHeight(78)
+        lay.addWidget(self.preview)
+
+        buttons = QDialogButtonBox()
+        self.btn_ok = buttons.addButton("应用", QDialogButtonBox.AcceptRole)
+        self.btn_cancel = buttons.addButton("取消", QDialogButtonBox.RejectRole)
+        self.btn_ok.clicked.connect(self._accept)
+        self.btn_cancel.clicked.connect(self.reject)
+        lay.addWidget(buttons)
+
+        self.ui_combo.currentTextChanged.connect(self._refresh_preview)
+        self.mono_combo.currentTextChanged.connect(self._refresh_preview)
+        self._refresh_preview()
+
+    @staticmethod
+    def _font_names(choices) -> list:
+        """列出候选；系统已装的排在前面，方便挑。"""
+        from PySide6.QtGui import QFontDatabase
+
+        installed = set(QFontDatabase.families())
+        known = [n for n in choices if n in installed]
+        others = [n for n in choices if n not in installed]
+        return known + [f"{n}（未安装）" for n in others]
+
+    def _clean(self, combo) -> str:
+        return combo.currentText().replace("（未安装）", "").strip()
+
+    def _refresh_preview(self):
+        ui = self._clean(self.ui_combo)
+        mono = self._clean(self.mono_combo)
+        from theme import font_stacks
+        stacks = font_stacks(ui, mono)
+        self.preview.setStyleSheet(
+            f"#fontPreview {{ background-color: transparent; "
+            f"font-family: {stacks['font_ui']}; font-size: 13px; }}"
+        )
+
+    def _accept(self):
+        ui = self._clean(self.ui_combo) or DEFAULT_UI_FONT
+        mono = self._clean(self.mono_combo) or DEFAULT_MONO_FONT
+        self.parent_window.settings.set("ui_font", ui)
+        self.parent_window.settings.set("mono_font", mono)
+        self.parent_window._apply_theme(getattr(self.parent_window, "_theme", "dark"))
+        self.parent_window.log(f"🔤 字体已更新：{ui} / {mono}")
+        self.accept()
 
 
 class MetaWorker(QThread):

@@ -18,3 +18,4 @@ config.enc
 .mockups/
 .msg.txt
 .commitmsg
+.cmsg.txt
